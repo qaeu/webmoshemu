@@ -1,0 +1,41 @@
+body {
+  margin: 0;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+#app {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+}
+
+canvas {
+  display: block;
+}
+
+.hud {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 10;
+  background: rgba(0, 0, 0, 0.48);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  padding: 12px 14px;
+  max-width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.hud h1 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.hud p {
+  margin: 6px 0 0;
+  font-size: 0.875rem;
+  opacity: 0.9;
+}
