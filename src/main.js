@@ -83,17 +83,21 @@ const sourceMaterial = new THREE.ShaderMaterial({
                     fbm(p + 2.0 * q + vec2(8.3, 2.8) + t * 0.5));
       float f = fbm(p + 2.0 * r);
 
-      // 5-stop smooth gradient: deep navy → violet → cobalt-blue → teal → sage
+      // 7-stop smooth gradient: deep navy → violet → magenta → cobalt-blue → teal → amber → sage
       vec3 c0 = vec3(0.02, 0.02, 0.18);  // deep navy-indigo
       vec3 c1 = vec3(0.07, 0.03, 0.25);  // rich violet
-      vec3 c2 = vec3(0.03, 0.14, 0.28);  // dark cobalt-blue
-      vec3 c3 = vec3(0.02, 0.20, 0.20);  // dark teal
-      vec3 c4 = vec3(0.10, 0.22, 0.10);  // dark sage-green
+      vec3 c2 = vec3(0.20, 0.03, 0.15);  // deep magenta
+      vec3 c3 = vec3(0.03, 0.14, 0.28);  // dark cobalt-blue
+      vec3 c4 = vec3(0.02, 0.20, 0.20);  // dark teal
+      vec3 c5 = vec3(0.18, 0.12, 0.02);  // deep amber
+      vec3 c6 = vec3(0.10, 0.22, 0.10);  // dark sage-green
 
-      vec3 col = mix(c0, c1, smoothstep(0.00, 0.25, f));
-      col      = mix(col, c2, smoothstep(0.20, 0.45, f));
-      col      = mix(col, c3, smoothstep(0.40, 0.65, f));
-      col      = mix(col, c4, smoothstep(0.60, 0.90, f));
+      vec3 col = mix(c0, c1, smoothstep(0.00, 0.18, f));
+      col      = mix(col, c2, smoothstep(0.15, 0.32, f));
+      col      = mix(col, c3, smoothstep(0.28, 0.46, f));
+      col      = mix(col, c4, smoothstep(0.42, 0.58, f));
+      col      = mix(col, c5, smoothstep(0.54, 0.72, f));
+      col      = mix(col, c6, smoothstep(0.68, 0.90, f));
 
       // Glowing accents on the brightest ridges
       col += 0.05 * vec3(0.2, 0.7, 1.0) * smoothstep(0.50, 0.80, f);
@@ -204,8 +208,8 @@ const processMaterial = new THREE.ShaderMaterial({
       float aspect    = uResolution.x / uResolution.y;
       vec2  toMouse   = (uv - uMouse) * vec2(aspect, 1.0);
       float dist      = length(toMouse);
-      // radius ~0.11 of screen height; beyond that the effect fades to zero.
-      float proximity = 1.0 - smoothstep(0.0, 0.11, dist);
+      // radius ~0.073 of screen height; beyond that the effect fades to zero.
+      float proximity = 1.0 - smoothstep(0.0, 0.073, dist);
 
       // Inside cursor: sample from motion-displaced prev (full mosh effect).
       // Outside cursor: sample from the same UV in prev (no displacement), so
@@ -222,18 +226,17 @@ const processMaterial = new THREE.ShaderMaterial({
       float prevMoshed = prevSample.a;
 
       // Mark pixel as moshed while cursor is near; outside the cursor the flag
-      // decays slowly so the colour retention fades back to source over time
-      // instead of propagating indefinitely through the motion field.
+      // never decays so moshed colours persist indefinitely.
       float inCursor   = step(0.05, proximity);
-      float moshedFlag = clamp(prevMoshed * mix(0.99, 1.0, inCursor) + inCursor, 0.0, 1.0);
+      float moshedFlag = clamp(prevMoshed + inCursor, 0.0, 1.0);
 
       // ── Persistence strategy ─────────────────────────────────────────────
       // Pristine pixels (prevMoshed ≈ 0): reset to source each frame (basePersist = 0).
-      // Previously-moshed pixels (prevMoshed ≈ 1): maintain with high persistence so
-      // their colours survive after the cursor leaves; the flag decays at ~1 %/frame
-      // outside the cursor so they gradually dissolve back into the source.
+      // Previously-moshed pixels (prevMoshed ≈ 1): maintain with full persistence so
+      // their colours survive indefinitely after the cursor leaves — moshed state
+      // never decays back to the source.
       float velBoost    = uMouseVelocity * 0.8 * proximity;
-      float basePersist = prevMoshed * 0.99;           // keeps moshed state alive
+      float basePersist = prevMoshed;                // keeps moshed state alive indefinitely
       float moshAmt     = clamp(
         max(basePersist, uPersistence * proximity) + velBoost,
         0.0, 0.97
