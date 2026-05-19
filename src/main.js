@@ -21,9 +21,12 @@ const fsScene = new THREE.Scene();
 const sourceScene = new THREE.Scene();
 
 const mouse = new THREE.Vector2(0.5, 0.5);
+// Accumulated raw UV-delta per frame; zeroed each frame after use.
 const mouseVelocity = new THREE.Vector2(0, 0);
+// Smoothed velocity in UV-units-per-second (exponential decay, frame-rate independent).
 const smoothVelocity = new THREE.Vector2(0, 0);
 const resolution = new THREE.Vector2(window.innerWidth, window.innerHeight);
+let prevFrameTime = 0;
 
 // ── Source: domain-warped FBM fractal background ──────────────────────────────
 const sourceMaterial = new THREE.ShaderMaterial({
@@ -138,14 +141,12 @@ const processMaterial = new THREE.ShaderMaterial({
     uniform float uMoshStrength;
     uniform float uPersistence;
 
-    float hash(vec2 p) {
-      return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-    }
-
     // Smooth, spatially coherent motion field — mimics real motion estimation.
     // All pixels inside the same macroblock share the same motion vector.
+    // Use blockCoord scaled by a fixed constant so the field is resolution-independent
+    // (no jump when the window is resized).
     vec2 blockMotionVec(vec2 blockCoord) {
-      vec2 nc = blockCoord / (uResolution / uBlockSize); // normalise to [0,1]
+      vec2 nc = blockCoord * 0.008;
       float ang =
           sin(uTime * 0.31 + nc.x * 4.2  + nc.y * 3.1)
         + sin(uTime * 0.17 + nc.x * 2.1  - nc.y * 5.3) * 0.5
@@ -191,7 +192,7 @@ const processMaterial = new THREE.ShaderMaterial({
 
       // ── Source (I-frame equivalent) and previous (P-frame reference) ────
       vec3 src  = texture2D(uSource, uv).rgb;
-      vec3 prev = dctQuantize(texture2D(uPrev, prevUv).rgb);
+      vec3 prev = texture2D(uPrev, prevUv).rgb;
 
       // ── Autonomous GOP cycle (I-frame drops every ~7 s) ─────────────────
       // pFrameWeight ≈ 0 at the start of each cycle (brief I-frame refresh),
@@ -200,13 +201,17 @@ const processMaterial = new THREE.ShaderMaterial({
       float pFrameWeight = smoothstep(0.0, 0.07, gopPhase);
 
       // ── Mouse velocity boosts corruption during fast cursor movement ─────
-      float velBoost = uMouseVelocity * 0.55;
+      // velBoost is gated by pFrameWeight so the I-frame window always flushes.
+      float velBoost = uMouseVelocity * 0.55 * pFrameWeight;
       float moshAmt  = clamp(
-        uPersistence * pFrameWeight + velBoost * (1.0 - pFrameWeight * 0.4),
+        uPersistence * pFrameWeight + velBoost,
         0.0, 0.97
       );
 
-      gl_FragColor = vec4(mix(src, prev, moshAmt), 1.0);
+      // Apply DCT-style quantisation to the final blended result once, matching
+      // how a real codec quantises each encoded frame rather than re-quantising
+      // an already-quantised feedback sample on every pass.
+      gl_FragColor = vec4(dctQuantize(mix(src, prev, moshAmt)), 1.0);
     }
   `,
 });
@@ -243,13 +248,20 @@ function frame() {
   requestAnimationFrame(frame);
 
   const time = clock.getElapsedTime();
+  // Delta time in seconds, clamped to avoid a huge spike on the first frame.
+  const dt = Math.min(time - prevFrameTime, 0.1);
+  prevFrameTime = time;
+
   sourceMaterial.uniforms.uTime.value = time;
   processMaterial.uniforms.uTime.value = time;
 
-  // Smooth velocity → normalise to a 0-1 corruption boost
-  smoothVelocity.lerp(mouseVelocity, 0.15);
+  // Convert accumulated frame delta to UV/sec, then smooth with a
+  // time-constant that is independent of frame rate (exponential decay).
+  const alpha = 1.0 - Math.exp(-10.0 * dt);
+  const velPerSec = mouseVelocity.clone().divideScalar(Math.max(dt, 1e-4));
+  smoothVelocity.lerp(velPerSec, alpha);
   processMaterial.uniforms.uMouseVelocity.value =
-    Math.min(smoothVelocity.length() * 50.0, 1.0);
+    Math.min(smoothVelocity.length() * 0.12, 1.0);
   mouseVelocity.set(0, 0);
 
   processMaterial.uniforms.uSource.value = sourceRT.texture;
