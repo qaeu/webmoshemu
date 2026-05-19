@@ -232,9 +232,9 @@ const processMaterial = new THREE.ShaderMaterial({
 
       // ── Persistence strategy ─────────────────────────────────────────────
       // Pristine pixels (prevMoshed ≈ 0): reset to source each frame (basePersist = 0).
-      // Previously-moshed pixels (prevMoshed ≈ 1): maintain with high persistence so
-      // their colours survive after the cursor leaves; the flag decays at ~1 %/frame
-      // outside the cursor so they gradually dissolve back into the source.
+      // Previously-moshed pixels (prevMoshed ≈ 1): maintain with full persistence so
+      // their colours survive indefinitely after the cursor leaves — moshed state
+      // never decays back to the source.
       float velBoost    = uMouseVelocity * 0.8 * proximity;
       float basePersist = prevMoshed;                // keeps moshed state alive indefinitely
       float moshAmt     = clamp(
