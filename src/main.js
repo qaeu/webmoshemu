@@ -73,15 +73,17 @@ const sourceMaterial = new THREE.ShaderMaterial({
     }
 
     void main() {
-      vec2 p = vUv * 3.5;
-      float t = uTime * 0.04;
+      vec2 p = vUv * 5.0;
+      float t = uTime * 0.05;
 
-      // Two layers of domain-warping for organic fractal feel
+      // Two layers of domain-warping for organic fractal feel.
+      // Reduced warp multipliers (2.0 instead of 4.0) keep spatial variation
+      // higher across the screen and avoid large flat colour regions.
       vec2 q = vec2(fbm(p + t),
                     fbm(p + vec2(5.2, 1.3) + t * 0.9));
-      vec2 r = vec2(fbm(p + 4.0 * q + vec2(1.7, 9.2) + t * 0.6),
-                    fbm(p + 4.0 * q + vec2(8.3, 2.8) + t * 0.5));
-      float f = fbm(p + 4.0 * r);
+      vec2 r = vec2(fbm(p + 2.0 * q + vec2(1.7, 9.2) + t * 0.6),
+                    fbm(p + 2.0 * q + vec2(8.3, 2.8) + t * 0.5));
+      float f = fbm(p + 2.0 * r);
 
       // Soft, dark palette: near-black indigo → dark slate → muted teal
       vec3 col = mix(
@@ -118,6 +120,7 @@ const processMaterial = new THREE.ShaderMaterial({
     uPrev:          { value: readRT.texture },
     uResolution:    { value: resolution.clone() },
     uTime:          { value: 0 },
+    uMouse:         { value: mouse },
     uMouseVelocity: { value: 0.0 },
     uBlockSize:     { value: 16.0 },
     uMoshStrength:  { value: 0.022 },
@@ -136,6 +139,7 @@ const processMaterial = new THREE.ShaderMaterial({
     uniform sampler2D uPrev;
     uniform vec2  uResolution;
     uniform float uTime;
+    uniform vec2  uMouse;
     uniform float uMouseVelocity;
     uniform float uBlockSize;
     uniform float uMoshStrength;
@@ -200,11 +204,20 @@ const processMaterial = new THREE.ShaderMaterial({
       float gopPhase    = fract(uTime / 7.0);
       float pFrameWeight = smoothstep(0.0, 0.07, gopPhase);
 
-      // ── Mouse velocity boosts corruption during fast cursor movement ─────
-      // velBoost is gated by pFrameWeight so the I-frame window always flushes.
-      float velBoost = uMouseVelocity * 0.55 * pFrameWeight;
+      // ── Proximity to cursor: mosh effect is localised around the cursor ──
+      // Account for aspect ratio so the radius is circular on screen.
+      float aspect    = uResolution.x / uResolution.y;
+      vec2  toMouse   = (uv - uMouse) * vec2(aspect, 1.0);
+      float dist      = length(toMouse);
+      // radius ~0.22 of screen height; beyond that the effect fades to zero.
+      float proximity = 1.0 - smoothstep(0.0, 0.22, dist);
+
+      // ── Mouse velocity boosts corruption near the cursor ─────────────────
+      // Both base persistence and velocity boost are gated by proximity so the
+      // mosh is concentrated around the cursor rather than screen-wide.
+      float velBoost = uMouseVelocity * 0.8 * pFrameWeight * proximity;
       float moshAmt  = clamp(
-        uPersistence * pFrameWeight + velBoost,
+        uPersistence * pFrameWeight * proximity + velBoost,
         0.0, 0.97
       );
 
