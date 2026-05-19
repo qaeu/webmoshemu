@@ -199,29 +199,39 @@ const processMaterial = new THREE.ShaderMaterial({
       vec2 prevOrigin = clamp(blockOrigin - mv, vec2(0.0), vec2(1.0) - bs);
       vec2 prevUv     = clamp(prevOrigin + localUv, 0.0, 1.0);
 
-      // ── Source and previous frame (P-frame only — no periodic I-frame reset) ──
-      vec3 src        = texture2D(uSource, uv).rgb;
-      vec4 prevSample = texture2D(uPrev, prevUv);
-      vec3 prev       = prevSample.rgb;
-      // Alpha channel stores the "has been moshed" flag (0 = pristine, 1 = moshed).
-      float prevMoshed = prevSample.a;
-
       // ── Proximity to cursor: mosh effect is localised around the cursor ──
       // Account for aspect ratio so the radius is circular on screen.
       float aspect    = uResolution.x / uResolution.y;
       vec2  toMouse   = (uv - uMouse) * vec2(aspect, 1.0);
       float dist      = length(toMouse);
-      // radius ~0.22 of screen height; beyond that the effect fades to zero.
-      float proximity = 1.0 - smoothstep(0.0, 0.22, dist);
+      // radius ~0.11 of screen height; beyond that the effect fades to zero.
+      float proximity = 1.0 - smoothstep(0.0, 0.11, dist);
 
-      // Mark pixel as moshed if cursor is near, or if the sampled prev pixel was
-      // already moshed (so the mark drifts with the motion field).
-      float moshedFlag = clamp(prevMoshed + step(0.05, proximity), 0.0, 1.0);
+      // Inside cursor: sample from motion-displaced prev (full mosh effect).
+      // Outside cursor: sample from the same UV in prev (no displacement), so
+      // moshed colours retain their hue at their screen positions rather than
+      // drifting with the synthetic motion field — emulating standard P-frames
+      // that follow moshed P-frames in a real codec.
+      vec2 sampleUv   = mix(uv, prevUv, proximity);
+
+      // ── Source and previous frame (P-frame only — no periodic I-frame reset) ──
+      vec3 src        = texture2D(uSource, uv).rgb;
+      vec4 prevSample = texture2D(uPrev, sampleUv);
+      vec3 prev       = prevSample.rgb;
+      // Alpha channel stores the "has been moshed" flag (0 = pristine, 1 = moshed).
+      float prevMoshed = prevSample.a;
+
+      // Mark pixel as moshed while cursor is near; outside the cursor the flag
+      // decays slowly so the colour retention fades back to source over time
+      // instead of propagating indefinitely through the motion field.
+      float inCursor   = step(0.05, proximity);
+      float moshedFlag = clamp(prevMoshed * mix(0.99, 1.0, inCursor) + inCursor, 0.0, 1.0);
 
       // ── Persistence strategy ─────────────────────────────────────────────
       // Pristine pixels (prevMoshed ≈ 0): reset to source each frame (basePersist = 0).
       // Previously-moshed pixels (prevMoshed ≈ 1): maintain with high persistence so
-      // their colours survive after the cursor leaves, still driven by the motion field.
+      // their colours survive after the cursor leaves; the flag decays at ~1 %/frame
+      // outside the cursor so they gradually dissolve back into the source.
       float velBoost    = uMouseVelocity * 0.8 * proximity;
       float basePersist = prevMoshed * 0.99;           // keeps moshed state alive
       float moshAmt     = clamp(
