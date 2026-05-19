@@ -77,22 +77,27 @@ const sourceMaterial = new THREE.ShaderMaterial({
       float t = uTime * 0.05;
 
       // Two layers of domain-warping for organic fractal feel.
-      // Reduced warp multipliers (2.0 instead of 4.0) keep spatial variation
-      // higher across the screen and avoid large flat colour regions.
       vec2 q = vec2(fbm(p + t),
                     fbm(p + vec2(5.2, 1.3) + t * 0.9));
       vec2 r = vec2(fbm(p + 2.0 * q + vec2(1.7, 9.2) + t * 0.6),
                     fbm(p + 2.0 * q + vec2(8.3, 2.8) + t * 0.5));
       float f = fbm(p + 2.0 * r);
 
-      // Soft, dark palette: near-black indigo → dark slate → muted teal
-      vec3 col = mix(
-        mix(vec3(0.04, 0.03, 0.10), vec3(0.07, 0.13, 0.20), clamp(f * 1.8, 0.0, 1.0)),
-        vec3(0.06, 0.20, 0.18),
-        clamp(f * f * 2.5, 0.0, 1.0)
-      );
-      // Very faint luminous highlight on the brightest ridges
-      col += 0.04 * vec3(0.3, 0.6, 1.0) * clamp(f - 0.5, 0.0, 1.0);
+      // 5-stop smooth gradient: deep navy → violet → cobalt-blue → teal → sage
+      vec3 c0 = vec3(0.02, 0.02, 0.18);  // deep navy-indigo
+      vec3 c1 = vec3(0.07, 0.03, 0.25);  // rich violet
+      vec3 c2 = vec3(0.03, 0.14, 0.28);  // dark cobalt-blue
+      vec3 c3 = vec3(0.02, 0.20, 0.20);  // dark teal
+      vec3 c4 = vec3(0.10, 0.22, 0.10);  // dark sage-green
+
+      vec3 col = mix(c0, c1, smoothstep(0.00, 0.25, f));
+      col      = mix(col, c2, smoothstep(0.20, 0.45, f));
+      col      = mix(col, c3, smoothstep(0.40, 0.65, f));
+      col      = mix(col, c4, smoothstep(0.60, 0.90, f));
+
+      // Glowing accents on the brightest ridges
+      col += 0.05 * vec3(0.2, 0.7, 1.0) * smoothstep(0.50, 0.80, f);
+      col += 0.03 * vec3(0.7, 0.3, 1.0) * smoothstep(0.75, 1.00, f);
 
       gl_FragColor = vec4(col, 1.0);
     }
@@ -194,15 +199,12 @@ const processMaterial = new THREE.ShaderMaterial({
       vec2 prevOrigin = clamp(blockOrigin - mv, vec2(0.0), vec2(1.0) - bs);
       vec2 prevUv     = clamp(prevOrigin + localUv, 0.0, 1.0);
 
-      // ── Source (I-frame equivalent) and previous (P-frame reference) ────
-      vec3 src  = texture2D(uSource, uv).rgb;
-      vec3 prev = texture2D(uPrev, prevUv).rgb;
-
-      // ── Autonomous GOP cycle (I-frame drops every ~7 s) ─────────────────
-      // pFrameWeight ≈ 0 at the start of each cycle (brief I-frame refresh),
-      // rising to 1 for the rest of the GOP (P-frames, corruption accumulates).
-      float gopPhase    = fract(uTime / 7.0);
-      float pFrameWeight = smoothstep(0.0, 0.07, gopPhase);
+      // ── Source and previous frame (P-frame only — no periodic I-frame reset) ──
+      vec3 src        = texture2D(uSource, uv).rgb;
+      vec4 prevSample = texture2D(uPrev, prevUv);
+      vec3 prev       = prevSample.rgb;
+      // Alpha channel stores the "has been moshed" flag (0 = pristine, 1 = moshed).
+      float prevMoshed = prevSample.a;
 
       // ── Proximity to cursor: mosh effect is localised around the cursor ──
       // Account for aspect ratio so the radius is circular on screen.
@@ -212,19 +214,25 @@ const processMaterial = new THREE.ShaderMaterial({
       // radius ~0.22 of screen height; beyond that the effect fades to zero.
       float proximity = 1.0 - smoothstep(0.0, 0.22, dist);
 
-      // ── Mouse velocity boosts corruption near the cursor ─────────────────
-      // Both base persistence and velocity boost are gated by proximity so the
-      // mosh is concentrated around the cursor rather than screen-wide.
-      float velBoost = uMouseVelocity * 0.8 * pFrameWeight * proximity;
-      float moshAmt  = clamp(
-        uPersistence * pFrameWeight * proximity + velBoost,
+      // Mark pixel as moshed if cursor is near, or if the sampled prev pixel was
+      // already moshed (so the mark drifts with the motion field).
+      float moshedFlag = clamp(prevMoshed + step(0.05, proximity), 0.0, 1.0);
+
+      // ── Persistence strategy ─────────────────────────────────────────────
+      // Pristine pixels (prevMoshed ≈ 0): reset to source each frame (basePersist = 0).
+      // Previously-moshed pixels (prevMoshed ≈ 1): maintain with high persistence so
+      // their colours survive after the cursor leaves, still driven by the motion field.
+      float velBoost    = uMouseVelocity * 0.8 * proximity;
+      float basePersist = prevMoshed * 0.99;           // keeps moshed state alive
+      float moshAmt     = clamp(
+        max(basePersist, uPersistence * proximity) + velBoost,
         0.0, 0.97
       );
 
       // Apply DCT-style quantisation to the final blended result once, matching
       // how a real codec quantises each encoded frame rather than re-quantising
       // an already-quantised feedback sample on every pass.
-      gl_FragColor = vec4(dctQuantize(mix(src, prev, moshAmt)), 1.0);
+      gl_FragColor = vec4(dctQuantize(mix(src, prev, moshAmt)), moshedFlag);
     }
   `,
 });
@@ -256,9 +264,15 @@ window.addEventListener('pointermove', (event) => {
 resize();
 
 const clock = new THREE.Clock();
+const FRAME_MS = 1000 / 30; // target 30 fps
+let lastFrameMs = 0;
 
-function frame() {
+function frame(timestamp) {
   requestAnimationFrame(frame);
+
+  // Throttle to 30 fps; skip if the browser fired the callback too early.
+  if (timestamp - lastFrameMs < FRAME_MS) return;
+  lastFrameMs = timestamp;
 
   const time = clock.getElapsedTime();
   // Delta time in seconds, clamped to avoid a huge spike on the first frame.
@@ -295,4 +309,4 @@ function frame() {
   writeRT = temp;
 }
 
-frame();
+requestAnimationFrame(frame);
