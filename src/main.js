@@ -16,11 +16,10 @@ const SHORT_SIDE = 384;
 const MB = 16;
 const STEP = 1 / 60;
 const QP = 28;
-const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const params = {
   radius: 8 * MB,
-  swirl: reducedMotion ? 1.0 : 2.2,
+  swirl: 2.2,
   inflow: 0.9,
   breath: 0.5,
   heatDecay: 0.992,
@@ -153,7 +152,6 @@ const pointer = {
   velocity: new THREE.Vector2(),
   target: 0,
   active: 0,
-  touched: false,
 };
 
 function toInternal(e) {
@@ -164,7 +162,6 @@ function toInternal(e) {
 }
 
 function onPointer(e) {
-  pointer.touched = true;
   pointer.target = 1;
   const samples = e.getCoalescedEvents?.() ?? [];
   for (const s of samples.length ? samples : [e]) {
@@ -193,24 +190,11 @@ canvas.addEventListener('pointerup', onRelease);
 canvas.addEventListener('pointercancel', onRelease);
 canvas.addEventListener('pointerleave', onRelease);
 
-// Until someone touches it, a slow drifting ghost pointer keeps the piece alive.
-function autopilot(t) {
-  const p = new THREE.Vector2(
-    size.w * (0.5 + 0.28 * Math.sin(t * 0.23)),
-    size.h * (0.5 + 0.22 * Math.sin(t * 0.31 + 1.2)),
-  );
-  if (pointer.last) pointer.delta.add(p.clone().sub(pointer.last));
-  pointer.last = p;
-  pointer.pos.copy(p);
-  pointer.target = 1;
-}
-
 // ── Decoder step ─────────────────────────────────────────────────────────────
 let time = 0;
 
 function step() {
   time += STEP;
-  if (!pointer.touched) autopilot(time);
 
   pointer.velocity.lerp(pointer.delta, 0.5);
   pointer.delta.set(0, 0);

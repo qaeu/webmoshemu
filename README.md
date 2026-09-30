@@ -2,7 +2,7 @@
 
 A fullscreen datamosh sandbox. A slow dusk-coloured field drifts across the screen, and wherever the pointer goes, a real (tiny) video decoder starts feeding itself the wrong frame. Blocks get torn along your motion and wound into a slow spiral drain. When the pointer leaves, they heal back one macroblock at a time.
 
-There is no UI. Move a mouse, or touch and drag. Until someone does, a drifting ghost pointer keeps it alive.
+There is no UI. Move a mouse, or touch and drag. Without any input the background simply keeps drifting.
 
 ## How the effect works
 
