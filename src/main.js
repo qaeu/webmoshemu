@@ -27,17 +27,17 @@ const params = {
   inflow: 0.9,
   breath: 0.5,
   // Pointer speed (internal px per step) at which the effect is at full strength.
-  speedRef: 6,
+  speedRef: 8,
   // Per-step pull of every vector towards the background's own motion.
-  mvRelax: 0.015,
+  mvRelax: 0.055,
   // Zone mask: a soft disc minus drifting simplex noise scaled to 0..0.5.
   noiseScale: 5 * MB,
   noiseSpeed: 0.12,
   // Healing: heat only drains where the background itself moves fast
   // (pyramidal Lucas-Kanade speed in internal px per step, ramping from x to y).
   flowEps: 2e-4,
-  healSpeed: new THREE.Vector2(0.3, 0.9),
-  healRate: 0.02,
+  healSpeed: new THREE.Vector2(0.3, 16.0),
+  healRate: 0.01,
   qstep: (0.625 * 2 ** (QP / 6)) / 255,
 };
 
