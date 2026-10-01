@@ -33,6 +33,12 @@ bool isInter(vec4 state) {
   return state.b > 0.06 + 0.55 * state.a;
 }
 
+// A block's fetch offset: the pointer's own offset (state.rg) on top of the
+// background's measured motion, so every block follows the scene exactly.
+vec2 blockMv(vec4 state, vec4 flow) {
+  return state.rg - flow.rg;
+}
+
 // Orthonormal 8x8 DCT basis: 0.5 * C(k) * cos((2x+1)k*pi/16).
 uniform float uBasis[64];
 float basis(int k, int x) { return uBasis[k * 8 + x]; }

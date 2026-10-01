@@ -7,6 +7,7 @@ in vec2 vUv;
 uniform sampler2D uRef;
 uniform sampler2D uCur;
 uniform sampler2D uState;
+uniform sampler2D uFlow;
 uniform sampler2D uMask;
 uniform bool uDebug;
 
@@ -45,7 +46,7 @@ void main() {
     col *= 1.0 - 0.6 * w;
     if (w > 0.0) {
       // Doubled for legibility, capped to stay inside the block.
-      vec2 v = -s.rg * 2.0;
+      vec2 v = -blockMv(s, texelFetch(uFlow, p / MB, 0)) * 2.0;
       float l = length(v);
       if (l > 0.45 * float(MB)) v *= 0.45 * float(MB) / l;
       vec2 c = (vec2(p / MB) + 0.5) * float(MB);

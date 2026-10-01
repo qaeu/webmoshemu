@@ -28,7 +28,8 @@ const params = {
   breath: 0.5,
   // Pointer speed (internal px per step) at which the effect is at full strength.
   speedRef: 8,
-  // Per-step pull of every vector towards the background's own motion.
+  // Per-step decay of the pointer's vector offset. Every block's vector is that
+  // offset on top of the background's measured motion, which is never relaxed.
   mvRelax: 0.055,
   // Zone mask: a soft disc minus drifting simplex noise scaled to 0..0.5.
   noiseScale: 5 * MB,
@@ -107,6 +108,7 @@ const blocksPass = pass(blocksFrag, {
   uSpeedRef: { value: params.speedRef },
   uHealSpeed: { value: params.healSpeed },
   uHealRate: { value: params.healRate },
+  uCut: { value: 0 },
 });
 const residualPass = pass(residualFrag, {
   uCur: { value: null },
@@ -119,6 +121,7 @@ const reconstructPass = pass(reconstructFrag, {
   uCur: { value: null },
   uCoef: { value: null },
   uState: { value: null },
+  uFlow: { value: null },
   uResidualGain: { value: 1 },
   uPhase: { value: new THREE.Vector4() },
 });
@@ -126,6 +129,7 @@ const presentPass = pass(presentFrag, {
   uRef: { value: null },
   uCur: { value: null },
   uState: { value: null },
+  uFlow: { value: null },
   uMask: { value: null },
   uDebug: { value: false },
 });
@@ -289,13 +293,18 @@ function videoSource(file) {
 
 let source = procedural;
 
-// Swap sources without resetting the decoder: hot blocks keep the old imagery
-// and smear it over the new footage. The new frame becomes `prev` so the first
-// step sees no motion or residual across the cut.
+// Swap sources like a datamosh cut with the new clip's I-frame removed: the
+// decoder keeps its last decoded frame as the reference, the next step forces
+// every block inter, and the new footage's residuals and motion then play out
+// over the old picture until its own motion heals it. The new frame becomes
+// `prev` so the first step sees no motion or residual across the cut.
+let cutPending = false;
+
 function setSource(next) {
   source.dispose();
   source = next;
   source.draw(src[1]);
+  cutPending = true;
 }
 
 // ── Pointer ──────────────────────────────────────────────────────────────────
@@ -384,6 +393,8 @@ function step(dt) {
   bu.uPointer.value.copy(pointer.pos);
   bu.uVelocity.value.copy(pointer.velocity).clampLength(0, 20 * k);
   bu.uSpeedRef.value = params.speedRef * k;
+  bu.uCut.value = cutPending ? 1 : 0;
+  cutPending = false;
   bu.uTime.value = time;
   draw(blocksPass, state[1]);
   state.reverse();
@@ -401,6 +412,7 @@ function step(dt) {
   cu.uCur.value = cur.texture;
   cu.uCoef.value = coef.texture;
   cu.uState.value = state[0].texture;
+  cu.uFlow.value = flow.texture;
   // Low-discrepancy (R2 / golden-ratio) rounding phases.
   cu.uPhase.value.set(
     (frameNo * 0.7548776662) % 1,
@@ -419,6 +431,7 @@ function present() {
   pu.uRef.value = ref[0].texture;
   pu.uCur.value = src[1].texture;
   pu.uState.value = state[0].texture;
+  pu.uFlow.value = flow.texture;
   pu.uMask.value = mask.texture;
   pu.uDebug.value = debug.on;
   draw(presentPass, null);

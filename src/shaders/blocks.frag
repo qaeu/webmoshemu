@@ -1,11 +1,13 @@
 // Per-macroblock state, one texel per 16x16 block:
-//   rg = motion vector (fetch offset, internal px), b = heat, a = random seed.
+//   rg = the pointer's fetch offset (internal px), b = heat, a = random seed.
+// The block's full vector is blockMv(): this offset on top of -flow.
 // The pointer's zone comes from mask.frag (a soft disc times drifting simplex
 // noise). Inside it, in proportion to the pointer's speed, blocks heat
-// up and their vectors are pulled towards a spiral vortex plus the pointer's
-// drag; a still pointer does nothing. Everywhere else the vectors relax towards
-// the background's own motion, like later P-frames of the real footage, so
-// stale moshed pixels keep their colour but drift with the scene beneath.
+// up and their offsets are pulled towards a spiral vortex plus the pointer's
+// drag; a still pointer does nothing. Everywhere else the offsets decay to
+// zero, leaving only the background's own motion, like later P-frames of the
+// real footage, so stale moshed pixels keep their colour but drift with the
+// scene beneath.
 // Heat never fades on its own: a block only heals once the background moves
 // strongly enough under it.
 uniform sampler2D uState;
@@ -18,10 +20,11 @@ uniform float uTime;
 uniform float uSwirl;
 uniform float uBreath;
 uniform float uInflow;
-uniform float uMvRelax;    // per-step pull of vectors towards the background's motion
+uniform float uMvRelax;    // per-step decay of the pointer's offset
 uniform float uSpeedRef;   // pointer speed (px/step) for full effect
 uniform vec2 uHealSpeed;   // background speed (px/step) where healing starts / is full
 uniform float uHealRate;   // heat removed per step at full background speed
+uniform float uCut;        // 1 on the step after a source swap: every block goes inter
 
 void main() {
   ivec2 b = ivec2(gl_FragCoord.xy);
@@ -37,7 +40,7 @@ void main() {
 
   vec3 flow = texelFetch(uFlow, b, 0).rgb;
   float heal = uHealRate * smoothstep(uHealSpeed.x, uHealSpeed.y, flow.b);
-  float heat = max(s.b - heal, w * gain);
+  float heat = max(max(s.b, uCut) - heal, w * gain);
 
   float R = uRadius;
   vec2 dir = r > 0.5 ? d / r : vec2(0.0);
@@ -48,11 +51,12 @@ void main() {
               + dir * prof * (uInflow + uBreath * sin(uTime * 0.9 - r * 0.05));
   vec2 target = w * (gain * vortex - uVelocity);
 
-  // Fetching from -flow copies the reference along with the background.
-  vec2 mv = mix(s.rg, -flow.rg, uMvRelax);
-  mv = mix(mv, target, w * gain * 0.35);
-  float m = length(mv);
-  if (m > 24.0) mv *= 24.0 / m;
+  // Only the pointer's offset relaxes; the background part of the vector is
+  // always the measured flow (added in blockMv), whatever the source.
+  vec2 off = s.rg * (1.0 - uMvRelax);
+  off = mix(off, target, w * gain * 0.35);
+  float m = length(off);
+  if (m > 24.0) off *= 24.0 / m;
 
-  fragColor = vec4(mv, heat, seed);
+  fragColor = vec4(off, heat, seed);
 }

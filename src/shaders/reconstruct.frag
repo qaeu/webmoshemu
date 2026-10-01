@@ -8,6 +8,7 @@ uniform sampler2D uRef;
 uniform sampler2D uCur;
 uniform sampler2D uCoef;
 uniform sampler2D uState;
+uniform sampler2D uFlow;
 uniform float uResidualGain;
 uniform vec4 uPhase;       // xy = luma rounding dither, zw = chroma
 
@@ -19,11 +20,12 @@ void main() {
     return;
   }
   ivec2 size = textureSize(uRef, 0);
-  ivec2 mv = ivec2(floor(s.rg + uPhase.xy));
+  vec2 v = blockMv(s, texelFetch(uFlow, p / MB, 0));
+  ivec2 mv = ivec2(floor(v + uPhase.xy));
 
   float y = rgb2ycc(texelFetch(uRef, clamp(p + mv, ivec2(0), size - 1), 0).rgb).x;
 
-  ivec2 mvc = ivec2(floor(s.rg * 0.5 + uPhase.zw)) * 2;
+  ivec2 mvc = ivec2(floor(v * 0.5 + uPhase.zw)) * 2;
   ivec2 c0 = clamp((p / 2) * 2 + mvc, ivec2(0), size - 2);
   vec2 cbcr = 0.25 * (
       rgb2ycc(texelFetch(uRef, c0, 0).rgb).yz
