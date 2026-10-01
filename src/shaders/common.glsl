@@ -2,6 +2,7 @@ precision highp float;
 precision highp int;
 
 #define MB 16
+#define SB 8
 
 out highp vec4 fragColor;
 
@@ -27,16 +28,48 @@ float hash12(vec2 p) {
   return fract((p3.x + p3.y) * p3.z);
 }
 
-// A macroblock is inter-coded (P) while its heat is above its own random
-// threshold, so the zone edge is ragged and heals block by block.
-bool isInter(vec4 state) {
-  return state.b > 0.06 + 0.55 * state.a;
+// Partitions. Heat lives per 16x16 macroblock (state); vectors live per 8x8
+// sub-block (sub), where b holds the macroblock's partition code, the same in
+// all four siblings: 0 = 16x16, 1 = 16x8 (two rows), 2 = 8x16 (two columns),
+// 3 = four 8x8. The helpers take values the pass has already fetched, so no
+// samplers are declared here.
+
+// The bottom-left sub-block of sb's partition group.
+ivec2 groupAnchor(float code, ivec2 sb) {
+  int c = int(code + 0.5);
+  ivec2 o = (sb / 2) * 2;
+  return c == 0 ? o : c == 1 ? ivec2(o.x, sb.y) : c == 2 ? ivec2(sb.x, o.y) : sb;
 }
 
-// A block's fetch offset: the pointer's own offset (state.rg) on top of the
-// background's measured motion, so every block follows the scene exactly.
-vec2 blockMv(vec4 state, vec4 flow) {
-  return state.rg - flow.rg;
+// A partition group's size in px.
+ivec2 groupExtent(float code) {
+  int c = int(code + 0.5);
+  return c == 0 ? ivec2(16) : c == 1 ? ivec2(16, 8) : c == 2 ? ivec2(8, 16) : ivec2(8);
+}
+
+// An unsplit macroblock keeps its own seed; each partition gets one from its anchor.
+float groupSeed(vec4 s, vec4 sub, ivec2 p) {
+  if (sub.b < 0.5) return s.a;
+  return hash12(vec2(groupAnchor(sub.b, p / SB)) + 7.1);
+}
+
+float interThreshold(float seed) {
+  return 0.06 + 0.55 * seed;
+}
+
+// A partition is inter-coded (P) while its macroblock's heat is above the
+// partition's own random threshold, so the zone edge is ragged at 8 px and
+// heals partition by partition. The only inter test: every DCT pass,
+// reconstruct and present must agree on it. s = state at p / MB, sub = sub at
+// p / SB.
+bool isInterAt(vec4 s, vec4 sub, ivec2 p) {
+  return s.b > interThreshold(groupSeed(s, sub, p));
+}
+
+// A pixel's fetch offset: its partition's pointer offset (sub.rg) on top of
+// the background's measured motion, so every block follows the scene exactly.
+vec2 pixelMv(vec4 sub, vec4 flow) {
+  return sub.rg - flow.rg;
 }
 
 // Orthonormal 8x8 DCT basis: 0.5 * C(k) * cos((2x+1)k*pi/16).

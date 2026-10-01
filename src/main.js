@@ -8,7 +8,10 @@ import videoFrag from './shaders/video.frag?raw';
 import flowFrag from './shaders/flow.frag?raw';
 import maskFrag from './shaders/mask.frag?raw';
 import blocksFrag from './shaders/blocks.frag?raw';
-import residualFrag from './shaders/residual.frag?raw';
+import subFrag from './shaders/sub.frag?raw';
+import dctRowsFrag from './shaders/dctRows.frag?raw';
+import dctColsFrag from './shaders/dctCols.frag?raw';
+import idctRowsFrag from './shaders/idctRows.frag?raw';
 import reconstructFrag from './shaders/reconstruct.frag?raw';
 import presentFrag from './shaders/present.frag?raw';
 
@@ -17,6 +20,7 @@ import presentFrag from './shaders/present.frag?raw';
 // size stays a constant fraction of the screen on every device.
 const SHORT_SIDE = 384;
 const MB = 16;
+const SB = 8;
 // Procedural source rate; video sources step once per video frame instead.
 const STEP = 1 / 60;
 const QP = 28;
@@ -31,6 +35,30 @@ const params = {
   // Per-step decay of the pointer's vector offset. Every block's vector is that
   // offset on top of the background's measured motion, which is never relaxed.
   mvRelax: 0.055,
+  // 8x8 partitions: how much each sub-block's target follows its own vortex
+  // position (vs. the macroblock's), its seeded twist, and the rate-distortion
+  // lambda range (px^2 per extra vector; low splits more readily).
+  subShear: 1,
+  subTwist: 0.8,
+  lamLo: 0.15,
+  lamHi: 1.2,
+  // Bloom: a share of macroblocks whose pointer offset relaxes much slower.
+  bloomFrac: 0.3,
+  bloomRelax: 0.15,
+  // Melt: a share of inter blocks whose offset passes meltMv px switch to
+  // bilinear motion compensation (warped per pixel when unsplit).
+  meltMv: 2.5,
+  meltFrac: 0.3,
+  // Rim smear: 8x8 partitions within smearBand heat of healing drip their
+  // neighbour's edge in.
+  smear: 0.6,
+  smearBand: 0.08,
+  // Colour drift on inter pixels: chroma's share of the pointer offset, a
+  // seeded per-step Cb/Cr bias at full heat, and residual over-application.
+  chromaLag: 0.85,
+  dcDrift: 0.0015,
+  resBloomFrac: 0.1,
+  resBloom: 2,
   // Zone mask: a soft disc minus drifting simplex noise scaled to 0..0.5.
   noiseScale: 5 * MB,
   noiseSpeed: 0.12,
@@ -95,7 +123,20 @@ const maskPass = pass(maskFrag, {
 });
 const blocksPass = pass(blocksFrag, {
   uState: { value: null },
+  uSub: { value: null },
   uFlow: { value: null },
+  uMask: { value: null },
+  uVelocity: { value: new THREE.Vector2() },
+  uSpeedRef: { value: params.speedRef },
+  uHealSpeed: { value: params.healSpeed },
+  uHealRate: { value: params.healRate },
+  uCut: { value: 0 },
+  uMeltMv: { value: params.meltMv },
+  uMeltFrac: { value: params.meltFrac },
+});
+const subPass = pass(subFrag, {
+  uSub: { value: null },
+  uState: { value: null },
   uMask: { value: null },
   uPointer: { value: new THREE.Vector2() },
   uVelocity: { value: new THREE.Vector2() },
@@ -106,29 +147,51 @@ const blocksPass = pass(blocksFrag, {
   uInflow: { value: params.inflow },
   uMvRelax: { value: params.mvRelax },
   uSpeedRef: { value: params.speedRef },
-  uHealSpeed: { value: params.healSpeed },
-  uHealRate: { value: params.healRate },
-  uCut: { value: 0 },
+  uSubShear: { value: params.subShear },
+  uSubTwist: { value: params.subTwist },
+  uLamLo: { value: params.lamLo },
+  uLamHi: { value: params.lamHi },
+  uBloomFrac: { value: params.bloomFrac },
+  uBloomRelax: { value: params.bloomRelax },
 });
-const residualPass = pass(residualFrag, {
+const dctRowsPass = pass(dctRowsFrag, {
   uCur: { value: null },
   uPrev: { value: null },
   uState: { value: null },
+  uSub: { value: null },
+});
+const dctColsPass = pass(dctColsFrag, {
+  uTmp: { value: null },
+  uState: { value: null },
+  uSub: { value: null },
   uQstep: { value: params.qstep },
+});
+const idctRowsPass = pass(idctRowsFrag, {
+  uCoef: { value: null },
+  uState: { value: null },
+  uSub: { value: null },
 });
 const reconstructPass = pass(reconstructFrag, {
   uRef: { value: null },
   uCur: { value: null },
-  uCoef: { value: null },
+  uTmp: { value: null },
   uState: { value: null },
+  uSub: { value: null },
   uFlow: { value: null },
   uResidualGain: { value: 1 },
   uPhase: { value: new THREE.Vector4() },
+  uChromaLag: { value: params.chromaLag },
+  uDcDrift: { value: params.dcDrift },
+  uResBloomFrac: { value: params.resBloomFrac },
+  uResBloom: { value: params.resBloom },
+  uSmear: { value: params.smear },
+  uSmearBand: { value: params.smearBand },
 });
 const presentPass = pass(presentFrag, {
   uRef: { value: null },
   uCur: { value: null },
   uState: { value: null },
+  uSub: { value: null },
   uFlow: { value: null },
   uMask: { value: null },
   uDebug: { value: false },
@@ -147,7 +210,7 @@ function target(w, h, filter = THREE.NearestFilter, mipmaps = false) {
 }
 
 let size = { w: 0, h: 0 };
-let src, state, ref, coef, flow, mask;
+let src, state, sub, ref, coef, tmp, flow, mask;
 
 function allocate() {
   const aspect = window.innerWidth / window.innerHeight;
@@ -156,25 +219,27 @@ function allocate() {
   const h = aspect >= 1 ? SHORT_SIDE : align(SHORT_SIDE / aspect);
   if (w === size.w && h === size.h) return;
 
-  [src, state, ref].flat().filter(Boolean).forEach((rt) => rt.dispose());
-  coef?.dispose();
-  flow?.dispose();
-  mask?.dispose();
+  [src, state, sub, ref, coef, tmp, flow, mask].flat().filter(Boolean).forEach((rt) => rt.dispose());
 
   size = { w, h };
   pointer.last = null;
   // Source frames carry a mip chain: the image pyramid for flow.frag.
   src = [target(w, h, THREE.LinearFilter, true), target(w, h, THREE.LinearFilter, true)];
   state = [target(w / MB, h / MB), target(w / MB, h / MB)];
-  ref = [target(w, h), target(w, h)];
+  // Linear for the bilinear fetches in reconstruct's melt path only; every
+  // other read is texelFetch, which ignores filtering.
+  sub = [target(w / SB, h / SB, THREE.LinearFilter), target(w / SB, h / SB, THREE.LinearFilter)];
+  ref = [target(w, h, THREE.LinearFilter), target(w, h, THREE.LinearFilter)];
   coef = target(w, h);
+  // Separable DCT intermediate, shared by the forward and inverse transforms.
+  tmp = target(w, h);
   flow = target(w / MB, h / MB);
   mask = target(w / MB, h / MB);
   backgroundPass.uniforms.uSize.value.set(w, h);
   videoPass.uniforms.uSize.value.set(w, h);
 
   // Start clean: zero block state, and a first source frame to diff against.
-  for (const rt of state) {
+  for (const rt of [...state, ...sub]) {
     renderer.setRenderTarget(rt);
     renderer.clear();
   }
@@ -385,33 +450,58 @@ function step(dt) {
   mu.uTime.value = time;
   draw(maskPass, mask);
 
-  // 4. Macroblock vectors + heat.
+  // 4. Macroblock heat and melt latch.
+  const velocity = pointer.velocity.clone().clampLength(0, 20 * k);
   const bu = blocksPass.uniforms;
   bu.uState.value = state[0].texture;
+  bu.uSub.value = sub[0].texture;
   bu.uFlow.value = flow.texture;
   bu.uMask.value = mask.texture;
-  bu.uPointer.value.copy(pointer.pos);
-  bu.uVelocity.value.copy(pointer.velocity).clampLength(0, 20 * k);
+  bu.uVelocity.value.copy(velocity);
   bu.uSpeedRef.value = params.speedRef * k;
   bu.uCut.value = cutPending ? 1 : 0;
   cutPending = false;
-  bu.uTime.value = time;
   draw(blocksPass, state[1]);
   state.reverse();
 
-  // 5. Quantised residual of the source.
-  const ru = residualPass.uniforms;
-  ru.uCur.value = cur.texture;
-  ru.uPrev.value = prev.texture;
-  ru.uState.value = state[0].texture;
-  draw(residualPass, coef);
+  // 5. Sub-block vectors and partitions.
+  const su = subPass.uniforms;
+  su.uSub.value = sub[0].texture;
+  su.uState.value = state[0].texture;
+  su.uMask.value = mask.texture;
+  su.uPointer.value.copy(pointer.pos);
+  su.uVelocity.value.copy(velocity);
+  su.uSpeedRef.value = params.speedRef * k;
+  su.uTime.value = time;
+  draw(subPass, sub[1]);
+  sub.reverse();
 
-  // 6. Reconstruct against the (wrong) previous decoded frame.
+  // 6. Quantised residual of the source (separable DCT: rows, then columns),
+  // and the first half of its inverse.
+  const dr = dctRowsPass.uniforms;
+  dr.uCur.value = cur.texture;
+  dr.uPrev.value = prev.texture;
+  dr.uState.value = state[0].texture;
+  dr.uSub.value = sub[0].texture;
+  draw(dctRowsPass, tmp);
+  const dc = dctColsPass.uniforms;
+  dc.uTmp.value = tmp.texture;
+  dc.uState.value = state[0].texture;
+  dc.uSub.value = sub[0].texture;
+  draw(dctColsPass, coef);
+  const ir = idctRowsPass.uniforms;
+  ir.uCoef.value = coef.texture;
+  ir.uState.value = state[0].texture;
+  ir.uSub.value = sub[0].texture;
+  draw(idctRowsPass, tmp);
+
+  // 7. Reconstruct against the (wrong) previous decoded frame.
   const cu = reconstructPass.uniforms;
   cu.uRef.value = ref[0].texture;
   cu.uCur.value = cur.texture;
-  cu.uCoef.value = coef.texture;
+  cu.uTmp.value = tmp.texture;
   cu.uState.value = state[0].texture;
+  cu.uSub.value = sub[0].texture;
   cu.uFlow.value = flow.texture;
   // Low-discrepancy (R2 / golden-ratio) rounding phases.
   cu.uPhase.value.set(
@@ -431,6 +521,7 @@ function present() {
   pu.uRef.value = ref[0].texture;
   pu.uCur.value = src[1].texture;
   pu.uState.value = state[0].texture;
+  pu.uSub.value = sub[0].texture;
   pu.uFlow.value = flow.texture;
   pu.uMask.value = mask.texture;
   pu.uDebug.value = debug.on;

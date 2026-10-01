@@ -1,39 +1,31 @@
 // Per-macroblock state, one texel per 16x16 block:
-//   rg = the pointer's fetch offset (internal px), b = heat, a = random seed.
-// The block's full vector is blockMv(): this offset on top of -flow.
+//   r = melt latch (0/1), g = unused, b = heat, a = random seed.
+// Vectors live per 8x8 sub-block in sub.frag, which runs after this pass.
 // The pointer's zone comes from mask.frag (a soft disc times drifting simplex
-// noise). Inside it, in proportion to the pointer's speed, blocks heat
-// up and their offsets are pulled towards a spiral vortex plus the pointer's
-// drag; a still pointer does nothing. Everywhere else the offsets decay to
-// zero, leaving only the background's own motion, like later P-frames of the
-// real footage, so stale moshed pixels keep their colour but drift with the
-// scene beneath.
+// noise). Inside it, in proportion to the pointer's speed, blocks heat up; a
+// still pointer does nothing.
 // Heat never fades on its own: a block only heals once the background moves
 // strongly enough under it.
+// Melt: a seeded share of inter blocks whose vectors get strong switch to
+// bilinear (sub-pel) motion compensation. The choice latches until the block
+// goes intra, so a block doesn't flicker between crisp and melted as its
+// vector relaxes.
 uniform sampler2D uState;
+uniform sampler2D uSub;    // last step's partitions
 uniform sampler2D uFlow;
 uniform sampler2D uMask;
-uniform vec2 uPointer;     // internal px, origin bottom-left
 uniform vec2 uVelocity;    // internal px per step
-uniform float uRadius;
-uniform float uTime;
-uniform float uSwirl;
-uniform float uBreath;
-uniform float uInflow;
-uniform float uMvRelax;    // per-step decay of the pointer's offset
 uniform float uSpeedRef;   // pointer speed (px/step) for full effect
 uniform vec2 uHealSpeed;   // background speed (px/step) where healing starts / is full
 uniform float uHealRate;   // heat removed per step at full background speed
 uniform float uCut;        // 1 on the step after a source swap: every block goes inter
+uniform float uMeltMv;     // pointer offset (px) a block needs before it can melt
+uniform float uMeltFrac;   // share of blocks that melt
 
 void main() {
   ivec2 b = ivec2(gl_FragCoord.xy);
   vec4 s = texelFetch(uState, b, 0);
   float seed = hash12(vec2(b) + 0.37);
-
-  vec2 c = (vec2(b) + 0.5) * float(MB);
-  vec2 d = c - uPointer;
-  float r = length(d);
 
   float w = texelFetch(uMask, b, 0).r;
   float gain = min(length(uVelocity) / uSpeedRef, 1.0);
@@ -42,21 +34,16 @@ void main() {
   float heal = uHealRate * smoothstep(uHealSpeed.x, uHealSpeed.y, flow.b);
   float heat = max(max(s.b, uCut) - heal, w * gain);
 
-  float R = uRadius;
-  vec2 dir = r > 0.5 ? d / r : vec2(0.0);
-  float prof = sin(3.14159265 * clamp(r / R, 0.0, 1.0));
-  // Tangential swirl plus a steady inward drain (fetching from further out
-  // pulls fresh blocks in from the rim), breathing slowly.
-  vec2 vortex = vec2(-dir.y, dir.x) * prof * uSwirl
-              + dir * prof * (uInflow + uBreath * sin(uTime * 0.9 - r * 0.05));
-  vec2 target = w * (gain * vortex - uVelocity);
+  vec4 ns = vec4(0.0, 0.0, heat, seed);
+  bool inter = false;
+  float mv = 0.0;
+  for (int i = 0; i < 4; i++) {
+    ivec2 sb = b * 2 + ivec2(i & 1, i >> 1);
+    vec4 sub = texelFetch(uSub, sb, 0);
+    inter = inter || isInterAt(ns, sub, sb * SB);
+    mv = max(mv, length(sub.rg));
+  }
+  bool melt = inter && (s.r > 0.5 || (mv > uMeltMv && hash12(vec2(b) + 3.1) < uMeltFrac));
 
-  // Only the pointer's offset relaxes; the background part of the vector is
-  // always the measured flow (added in blockMv), whatever the source.
-  vec2 off = s.rg * (1.0 - uMvRelax);
-  off = mix(off, target, w * gain * 0.35);
-  float m = length(off);
-  if (m > 24.0) off *= 24.0 / m;
-
-  fragColor = vec4(off, heat, seed);
+  fragColor = vec4(melt ? 1.0 : 0.0, 0.0, heat, seed);
 }

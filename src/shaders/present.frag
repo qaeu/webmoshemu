@@ -1,12 +1,14 @@
 // Inter blocks are shown with nearest sampling so the block copies stay crisp;
 // clean blocks use the filtered source so the background stays smooth.
-// With the debug overlay on, the pointer mask is shaded translucent black and
-// each masked block gets a white arrow for the direction its content moves
-// (-mv, since mv is a fetch offset).
+// With the debug overlay on, the pointer mask is shaded translucent black, each
+// partition group in it gets a white arrow for the direction its content moves
+// (-mv, since mv is a fetch offset), and inter blocks show their partition
+// edges.
 in vec2 vUv;
 uniform sampler2D uRef;
 uniform sampler2D uCur;
 uniform sampler2D uState;
+uniform sampler2D uSub;
 uniform sampler2D uFlow;
 uniform sampler2D uMask;
 uniform bool uDebug;
@@ -36,20 +38,33 @@ void main() {
   ivec2 size = textureSize(uRef, 0);
   ivec2 p = clamp(ivec2(vUv * vec2(size)), ivec2(0), size - 1);
   vec4 s = texelFetch(uState, p / MB, 0);
+  vec4 sub = texelFetch(uSub, p / SB, 0);
   vec2 pf = vUv * vec2(size);
   float aa = fwidth(pf.x);
-  vec3 col = isInter(s)
+  bool inter = isInterAt(s, sub, p);
+  vec3 col = inter
     ? texelFetch(uRef, p, 0).rgb
     : texture(uCur, vUv).rgb;
   if (uDebug) {
     float w = texelFetch(uMask, p / MB, 0).r;
     col *= 1.0 - 0.6 * w;
     if (w > 0.0) {
-      // Doubled for legibility, capped to stay inside the block.
-      vec2 v = -blockMv(s, texelFetch(uFlow, p / MB, 0)) * 2.0;
+      int code = int(sub.b + 0.5);
+      if (inter) {
+        // 1 px partition edges through the macroblock's middle.
+        vec2 mid = (vec2(p / MB) + 0.5) * float(MB);
+        float e = 1.0;
+        if (code == 2 || code == 3) e = min(e, abs(pf.x - mid.x) / aa);
+        if (code == 1 || code == 3) e = min(e, abs(pf.y - mid.y) / aa);
+        col = mix(col, vec3(1.0), 0.5 * (1.0 - smoothstep(0.5, 1.0, e)));
+      }
+      // Doubled for legibility, capped to stay inside the group.
+      vec2 ext = vec2(groupExtent(sub.b));
+      vec2 v = -pixelMv(sub, texelFetch(uFlow, p / MB, 0)) * 2.0;
       float l = length(v);
-      if (l > 0.45 * float(MB)) v *= 0.45 * float(MB) / l;
-      vec2 c = (vec2(p / MB) + 0.5) * float(MB);
+      float cap = 0.45 * min(ext.x, ext.y);
+      if (l > cap) v *= cap / l;
+      vec2 c = vec2(groupAnchor(sub.b, p / SB) * SB) + 0.5 * ext;
       col = mix(col, vec3(1.0), 0.9 * arrow(pf, c, v, aa));
     }
   }
