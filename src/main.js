@@ -5,6 +5,7 @@ import common from './shaders/common.glsl?raw';
 import quadVert from './shaders/quad.vert?raw';
 import backgroundFrag from './shaders/background.frag?raw';
 import flowFrag from './shaders/flow.frag?raw';
+import maskFrag from './shaders/mask.frag?raw';
 import blocksFrag from './shaders/blocks.frag?raw';
 import residualFrag from './shaders/residual.frag?raw';
 import reconstructFrag from './shaders/reconstruct.frag?raw';
@@ -23,10 +24,12 @@ const params = {
   swirl: 2.2,
   inflow: 0.9,
   breath: 0.5,
-  mvDecay: 0.985,
-  // Zone edge: simplex noise displaces the disc's rim by up to noiseAmp * radius.
+  // Pointer speed (internal px per step) at which the effect is at full strength.
+  speedRef: 6,
+  // Per-step pull of every vector towards the background's own motion.
+  mvRelax: 0.015,
+  // Zone mask: a soft disc minus drifting simplex noise scaled to 0..0.5.
   noiseScale: 5 * MB,
-  noiseAmp: 0.45,
   noiseSpeed: 0.12,
   // Healing: heat only drains where the background itself moves fast
   // (Lucas-Kanade speed in internal px per step, ramping from x to y).
@@ -74,21 +77,27 @@ const flowPass = pass(flowFrag, {
   uPrev: { value: null },
   uFlowEps: { value: params.flowEps },
 });
+const maskPass = pass(maskFrag, {
+  uPointer: { value: new THREE.Vector2() },
+  uActive: { value: 0 },
+  uRadius: { value: params.radius },
+  uTime: { value: 0 },
+  uNoiseScale: { value: params.noiseScale },
+  uNoiseSpeed: { value: params.noiseSpeed },
+});
 const blocksPass = pass(blocksFrag, {
   uState: { value: null },
   uFlow: { value: null },
+  uMask: { value: null },
   uPointer: { value: new THREE.Vector2() },
   uVelocity: { value: new THREE.Vector2() },
-  uActive: { value: 0 },
   uRadius: { value: params.radius },
   uTime: { value: 0 },
   uSwirl: { value: params.swirl },
   uBreath: { value: params.breath },
   uInflow: { value: params.inflow },
-  uMvDecay: { value: params.mvDecay },
-  uNoiseScale: { value: params.noiseScale },
-  uNoiseAmp: { value: params.noiseAmp },
-  uNoiseSpeed: { value: params.noiseSpeed },
+  uMvRelax: { value: params.mvRelax },
+  uSpeedRef: { value: params.speedRef },
   uHealSpeed: { value: params.healSpeed },
   uHealRate: { value: params.healRate },
 });
@@ -104,11 +113,14 @@ const reconstructPass = pass(reconstructFrag, {
   uCoef: { value: null },
   uState: { value: null },
   uResidualGain: { value: 1 },
+  uPhase: { value: new THREE.Vector4() },
 });
 const presentPass = pass(presentFrag, {
   uRef: { value: null },
   uCur: { value: null },
   uState: { value: null },
+  uMask: { value: null },
+  uDebug: { value: false },
 });
 
 // ── Render targets (RGBA16F: renderable on iOS, unlike 32-bit float) ────────
@@ -123,7 +135,7 @@ function target(w, h, filter = THREE.NearestFilter) {
 }
 
 let size = { w: 0, h: 0 };
-let src, state, ref, coef, flow;
+let src, state, ref, coef, flow, mask;
 
 function allocate() {
   const aspect = window.innerWidth / window.innerHeight;
@@ -135,6 +147,7 @@ function allocate() {
   [src, state, ref].flat().filter(Boolean).forEach((rt) => rt.dispose());
   coef?.dispose();
   flow?.dispose();
+  mask?.dispose();
 
   size = { w, h };
   pointer.last = null;
@@ -143,6 +156,7 @@ function allocate() {
   ref = [target(w, h), target(w, h)];
   coef = target(w, h);
   flow = target(w / MB, h / MB);
+  mask = target(w / MB, h / MB);
   backgroundPass.uniforms.uSize.value.set(w, h);
 
   // Start clean: zero block state, and a first source frame to diff against.
@@ -213,9 +227,11 @@ canvas.addEventListener('pointerleave', onRelease);
 
 // ── Decoder step ─────────────────────────────────────────────────────────────
 let time = 0;
+let frameNo = 0;
 
 function step() {
   time += STEP;
+  frameNo++;
 
   pointer.velocity.lerp(pointer.delta, 0.5);
   pointer.delta.set(0, 0);
@@ -230,30 +246,44 @@ function step() {
   flowPass.uniforms.uPrev.value = prev.texture;
   draw(flowPass, flow);
 
-  // 3. Macroblock vectors + heat.
+  // 3. Pointer zone mask.
+  const mu = maskPass.uniforms;
+  mu.uPointer.value.copy(pointer.pos);
+  mu.uActive.value = pointer.active;
+  mu.uTime.value = time;
+  draw(maskPass, mask);
+
+  // 4. Macroblock vectors + heat.
   const bu = blocksPass.uniforms;
   bu.uState.value = state[0].texture;
   bu.uFlow.value = flow.texture;
+  bu.uMask.value = mask.texture;
   bu.uPointer.value.copy(pointer.pos);
   bu.uVelocity.value.copy(pointer.velocity).clampLength(0, 20);
-  bu.uActive.value = pointer.active;
   bu.uTime.value = time;
   draw(blocksPass, state[1]);
   state.reverse();
 
-  // 4. Quantised residual of the source.
+  // 5. Quantised residual of the source.
   const ru = residualPass.uniforms;
   ru.uCur.value = cur.texture;
   ru.uPrev.value = prev.texture;
   ru.uState.value = state[0].texture;
   draw(residualPass, coef);
 
-  // 5. Reconstruct against the (wrong) previous decoded frame.
+  // 6. Reconstruct against the (wrong) previous decoded frame.
   const cu = reconstructPass.uniforms;
   cu.uRef.value = ref[0].texture;
   cu.uCur.value = cur.texture;
   cu.uCoef.value = coef.texture;
   cu.uState.value = state[0].texture;
+  // Low-discrepancy (R2 / golden-ratio) rounding phases.
+  cu.uPhase.value.set(
+    (frameNo * 0.7548776662) % 1,
+    (frameNo * 0.5698402910) % 1,
+    (frameNo * 0.6180339887 + 0.5) % 1,
+    (frameNo * 0.4142135624 + 0.5) % 1,
+  );
   draw(reconstructPass, ref[1]);
   ref.reverse();
 
@@ -265,7 +295,33 @@ function present() {
   pu.uRef.value = ref[0].texture;
   pu.uCur.value = src[1].texture;
   pu.uState.value = state[0].texture;
+  pu.uMask.value = mask.texture;
+  pu.uDebug.value = debug.on;
   draw(presentPass, null);
+}
+
+// ── Debug overlay ('d'): fps readout plus the pointer mask shaded black ─────
+const debug = { on: false, frames: 0, since: performance.now(), el: document.createElement('div') };
+debug.el.className = 'fps';
+debug.el.hidden = true;
+document.body.appendChild(debug.el);
+
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'd' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  debug.on = !debug.on;
+  debug.el.hidden = !debug.on;
+  debug.frames = 0;
+  debug.since = performance.now();
+});
+
+function countFrame(now) {
+  if (!debug.on) return;
+  debug.frames++;
+  if (now - debug.since >= 500) {
+    debug.el.textContent = `${Math.round((debug.frames * 1000) / (now - debug.since))} fps`;
+    debug.frames = 0;
+    debug.since = now;
+  }
 }
 
 function resize() {
@@ -282,6 +338,7 @@ function frame(now) {
   requestAnimationFrame(frame);
   acc += Math.min((now - last) / 1000, 0.1);
   last = now;
+  countFrame(now);
   // Fixed-rate decode, at most two steps per display frame.
   let n = 0;
   while (acc >= STEP && n < 2) {

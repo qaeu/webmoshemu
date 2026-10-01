@@ -1,11 +1,15 @@
 // out = MC(previous decoded frame, mv) + IDCT(Q(residual)) for inter blocks,
 // the clean source for intra blocks. Luma is copied per 16x16 block at
-// integer-pel; chroma is predicted on the 4:2:0 grid with floor(mv / 2).
+// integer-pel; chroma is predicted on the 4:2:0 grid in 2px steps. Vectors are
+// rounded with a per-step dither shared by every block, so sub-pixel motion
+// (the slow background drift) advances in whole-pixel jumps at the right
+// average rate instead of rounding to zero or blurring through interpolation.
 uniform sampler2D uRef;
 uniform sampler2D uCur;
 uniform sampler2D uCoef;
 uniform sampler2D uState;
 uniform float uResidualGain;
+uniform vec4 uPhase;       // xy = luma rounding dither, zw = chroma
 
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
@@ -15,11 +19,11 @@ void main() {
     return;
   }
   ivec2 size = textureSize(uRef, 0);
-  ivec2 mv = ivec2(floor(s.rg + 0.5));
+  ivec2 mv = ivec2(floor(s.rg + uPhase.xy));
 
   float y = rgb2ycc(texelFetch(uRef, clamp(p + mv, ivec2(0), size - 1), 0).rgb).x;
 
-  ivec2 mvc = ivec2(floor(vec2(mv) * 0.5)) * 2;
+  ivec2 mvc = ivec2(floor(s.rg * 0.5 + uPhase.zw)) * 2;
   ivec2 c0 = clamp((p / 2) * 2 + mvc, ivec2(0), size - 2);
   vec2 cbcr = 0.25 * (
       rgb2ycc(texelFetch(uRef, c0, 0).rgb).yz
