@@ -22,10 +22,11 @@ A fullscreen, UI-free datamosh sandbox: a simplified inter-frame video decoder r
 **Pass pipeline.** `main.js` draws a single fullscreen quad with a swapped `ShaderMaterial` per pass (`pass()` / `draw()`). Every fragment shader is prefixed with `common.glsl` at build time (imported via Vite `?raw` and string-concatenated), so helpers like `rgb2ycc`, `hash12`, `isInter`, `basis`, the `MB` define and the `fragColor` output are available in every `.frag` without declaring them. `uBasis` (the 8×8 DCT basis) is injected into every pass's uniforms. Shaders are GLSL3 (`#version` is added by three.js).
 
 **Per-step order** (`step()`), each writing to its own render target:
-1. `blocks.frag` → `state` (ping-pong, one texel per 16×16 macroblock: `rg` = motion vector in internal px, `b` = heat, `a` = random seed)
-2. `background.frag` → `src[0]` (clean source frame; `src` ping-pongs so `src[1]` is the previous frame)
-3. `residual.frag` → `coef` (quantised 8×8 DCT of `cur - prev`, one texel per coefficient laid out block-locally)
-4. `reconstruct.frag` → `ref` (ping-pong feedback: MC from previous decoded frame + IDCT residual for inter blocks, clean source for intra blocks)
+1. `background.frag` → `src[0]` (clean source frame; `src` ping-pongs so `src[1]` is the previous frame)
+2. `flow.frag` → `flow` (one texel per macroblock: Lucas–Kanade motion of the background between `src[1]` and `src[0]`; `rg` = px/step, `b` = speed)
+3. `blocks.frag` → `state` (ping-pong, one texel per 16×16 macroblock: `rg` = motion vector in internal px, `b` = heat, `a` = random seed). The pointer zone is a disc with a simplex-noise-displaced rim; heat has no time decay and only drains where `flow` speed exceeds `params.healSpeed`
+4. `residual.frag` → `coef` (quantised 8×8 DCT of `cur - prev`, one texel per coefficient laid out block-locally)
+5. `reconstruct.frag` → `ref` (ping-pong feedback: MC from previous decoded frame + IDCT residual for inter blocks, clean source for intra blocks)
 
 `present.frag` then draws to the screen. Ping-pong buffers are swapped with `array.reverse()` after each write, so index `[0]` is always "latest" after a swap — keep that invariant when adding passes.
 

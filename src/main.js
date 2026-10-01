@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import common from './shaders/common.glsl?raw';
 import quadVert from './shaders/quad.vert?raw';
 import backgroundFrag from './shaders/background.frag?raw';
+import flowFrag from './shaders/flow.frag?raw';
 import blocksFrag from './shaders/blocks.frag?raw';
 import residualFrag from './shaders/residual.frag?raw';
 import reconstructFrag from './shaders/reconstruct.frag?raw';
@@ -22,8 +23,16 @@ const params = {
   swirl: 2.2,
   inflow: 0.9,
   breath: 0.5,
-  heatDecay: 0.992,
   mvDecay: 0.985,
+  // Zone edge: simplex noise displaces the disc's rim by up to noiseAmp * radius.
+  noiseScale: 5 * MB,
+  noiseAmp: 0.45,
+  noiseSpeed: 0.12,
+  // Healing: heat only drains where the background itself moves fast
+  // (Lucas-Kanade speed in internal px per step, ramping from x to y).
+  flowEps: 2e-4,
+  healSpeed: new THREE.Vector2(0.15, 0.5),
+  healRate: 0.02,
   qstep: (0.625 * 2 ** (QP / 6)) / 255,
 };
 
@@ -60,8 +69,14 @@ const backgroundPass = pass(backgroundFrag, {
   uTime: { value: 0 },
   uSize: { value: new THREE.Vector2() },
 });
+const flowPass = pass(flowFrag, {
+  uCur: { value: null },
+  uPrev: { value: null },
+  uFlowEps: { value: params.flowEps },
+});
 const blocksPass = pass(blocksFrag, {
   uState: { value: null },
+  uFlow: { value: null },
   uPointer: { value: new THREE.Vector2() },
   uVelocity: { value: new THREE.Vector2() },
   uActive: { value: 0 },
@@ -70,8 +85,12 @@ const blocksPass = pass(blocksFrag, {
   uSwirl: { value: params.swirl },
   uBreath: { value: params.breath },
   uInflow: { value: params.inflow },
-  uHeatDecay: { value: params.heatDecay },
   uMvDecay: { value: params.mvDecay },
+  uNoiseScale: { value: params.noiseScale },
+  uNoiseAmp: { value: params.noiseAmp },
+  uNoiseSpeed: { value: params.noiseSpeed },
+  uHealSpeed: { value: params.healSpeed },
+  uHealRate: { value: params.healRate },
 });
 const residualPass = pass(residualFrag, {
   uCur: { value: null },
@@ -104,7 +123,7 @@ function target(w, h, filter = THREE.NearestFilter) {
 }
 
 let size = { w: 0, h: 0 };
-let src, state, ref, coef;
+let src, state, ref, coef, flow;
 
 function allocate() {
   const aspect = window.innerWidth / window.innerHeight;
@@ -115,6 +134,7 @@ function allocate() {
 
   [src, state, ref].flat().filter(Boolean).forEach((rt) => rt.dispose());
   coef?.dispose();
+  flow?.dispose();
 
   size = { w, h };
   pointer.last = null;
@@ -122,6 +142,7 @@ function allocate() {
   state = [target(w / MB, h / MB), target(w / MB, h / MB)];
   ref = [target(w, h), target(w, h)];
   coef = target(w, h);
+  flow = target(w / MB, h / MB);
   backgroundPass.uniforms.uSize.value.set(w, h);
 
   // Start clean: zero block state, and a first source frame to diff against.
@@ -200,9 +221,19 @@ function step() {
   pointer.delta.set(0, 0);
   pointer.active += (pointer.target - pointer.active) * 0.08;
 
-  // 1. Macroblock vectors + heat.
+  // 1. New source frame.
+  renderBackground(src[0], time);
+  const [cur, prev] = src;
+
+  // 2. The background's own motion vectors.
+  flowPass.uniforms.uCur.value = cur.texture;
+  flowPass.uniforms.uPrev.value = prev.texture;
+  draw(flowPass, flow);
+
+  // 3. Macroblock vectors + heat.
   const bu = blocksPass.uniforms;
   bu.uState.value = state[0].texture;
+  bu.uFlow.value = flow.texture;
   bu.uPointer.value.copy(pointer.pos);
   bu.uVelocity.value.copy(pointer.velocity).clampLength(0, 20);
   bu.uActive.value = pointer.active;
@@ -210,18 +241,14 @@ function step() {
   draw(blocksPass, state[1]);
   state.reverse();
 
-  // 2. New source frame.
-  renderBackground(src[0], time);
-  const [cur, prev] = src;
-
-  // 3. Quantised residual of the source.
+  // 4. Quantised residual of the source.
   const ru = residualPass.uniforms;
   ru.uCur.value = cur.texture;
   ru.uPrev.value = prev.texture;
   ru.uState.value = state[0].texture;
   draw(residualPass, coef);
 
-  // 4. Reconstruct against the (wrong) previous decoded frame.
+  // 5. Reconstruct against the (wrong) previous decoded frame.
   const cu = reconstructPass.uniforms;
   cu.uRef.value = ref[0].texture;
   cu.uCur.value = cur.texture;
