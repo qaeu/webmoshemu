@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import common from './shaders/common.glsl?raw';
 import quadVert from './shaders/quad.vert?raw';
 import backgroundFrag from './shaders/background.frag?raw';
+import videoFrag from './shaders/video.frag?raw';
 import flowFrag from './shaders/flow.frag?raw';
 import maskFrag from './shaders/mask.frag?raw';
 import blocksFrag from './shaders/blocks.frag?raw';
@@ -16,6 +17,7 @@ import presentFrag from './shaders/present.frag?raw';
 // size stays a constant fraction of the screen on every device.
 const SHORT_SIDE = 384;
 const MB = 16;
+// Procedural source rate; video sources step once per video frame instead.
 const STEP = 1 / 60;
 const QP = 28;
 
@@ -32,7 +34,7 @@ const params = {
   noiseScale: 5 * MB,
   noiseSpeed: 0.12,
   // Healing: heat only drains where the background itself moves fast
-  // (Lucas-Kanade speed in internal px per step, ramping from x to y).
+  // (pyramidal Lucas-Kanade speed in internal px per step, ramping from x to y).
   flowEps: 2e-4,
   healSpeed: new THREE.Vector2(0.3, 0.9),
   healRate: 0.02,
@@ -71,6 +73,11 @@ function pass(fragmentShader, uniforms) {
 const backgroundPass = pass(backgroundFrag, {
   uTime: { value: 0 },
   uSize: { value: new THREE.Vector2() },
+});
+const videoPass = pass(videoFrag, {
+  uVideo: { value: null },
+  uSize: { value: new THREE.Vector2() },
+  uVideoSize: { value: new THREE.Vector2() },
 });
 const flowPass = pass(flowFrag, {
   uCur: { value: null },
@@ -124,12 +131,13 @@ const presentPass = pass(presentFrag, {
 });
 
 // ── Render targets (RGBA16F: renderable on iOS, unlike 32-bit float) ────────
-function target(w, h, filter = THREE.NearestFilter) {
+function target(w, h, filter = THREE.NearestFilter, mipmaps = false) {
   return new THREE.WebGLRenderTarget(w, h, {
     type: THREE.HalfFloatType,
     format: THREE.RGBAFormat,
-    minFilter: filter,
+    minFilter: mipmaps ? THREE.LinearMipmapLinearFilter : filter,
     magFilter: filter,
+    generateMipmaps: mipmaps,
     depthBuffer: false,
   });
 }
@@ -151,21 +159,23 @@ function allocate() {
 
   size = { w, h };
   pointer.last = null;
-  src = [target(w, h, THREE.LinearFilter), target(w, h, THREE.LinearFilter)];
+  // Source frames carry a mip chain: the image pyramid for flow.frag.
+  src = [target(w, h, THREE.LinearFilter, true), target(w, h, THREE.LinearFilter, true)];
   state = [target(w / MB, h / MB), target(w / MB, h / MB)];
   ref = [target(w, h), target(w, h)];
   coef = target(w, h);
   flow = target(w / MB, h / MB);
   mask = target(w / MB, h / MB);
   backgroundPass.uniforms.uSize.value.set(w, h);
+  videoPass.uniforms.uSize.value.set(w, h);
 
   // Start clean: zero block state, and a first source frame to diff against.
   for (const rt of state) {
     renderer.setRenderTarget(rt);
     renderer.clear();
   }
-  renderBackground(src[1], time);
-  renderBackground(ref[0], time);
+  source.draw(src[1]);
+  source.draw(ref[0]);
 }
 
 function draw(material, rt) {
@@ -174,9 +184,118 @@ function draw(material, rt) {
   renderer.render(scene, camera);
 }
 
-function renderBackground(rt, t) {
-  backgroundPass.uniforms.uTime.value = t;
-  draw(backgroundPass, rt);
+// ── Sources ──────────────────────────────────────────────────────────────────
+// A source supplies the clean frames the decoder encodes. The decoder steps
+// once per source frame:
+//   draw(rt)   render the current frame into rt
+//   poll(now)  durations (s) of the frames due this display frame, if any
+//   dispose()
+const procedural = {
+  last: performance.now(),
+  acc: 0,
+  draw(rt) {
+    backgroundPass.uniforms.uTime.value = time;
+    draw(backgroundPass, rt);
+  },
+  // Fixed 60 Hz, at most two steps per display frame.
+  poll(now) {
+    this.acc += Math.min((now - this.last) / 1000, 0.1);
+    this.last = now;
+    const due = [];
+    while (this.acc >= STEP && due.length < 2) {
+      due.push(STEP);
+      this.acc -= STEP;
+    }
+    if (this.acc > STEP) this.acc = 0;
+    return due;
+  },
+  dispose() {},
+};
+
+// A video file, stepped at its own frame rate (one step per presented frame).
+// Resolves once the first frame is decodable; rejects if it can't be played.
+function videoSource(file) {
+  const url = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  video.muted = true;
+  video.loop = true;
+  video.playsInline = true;
+  video.src = url;
+
+  const texture = new THREE.VideoTexture(video);
+  // The pipeline works on display-encoded values, like the procedural source.
+  texture.colorSpace = THREE.NoColorSpace;
+
+  const hasRvfc = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
+  let callback = 0;
+  let pending = null; // media time of the newest unconsumed frame
+  let last = null;
+  let dt = 1 / 30;
+
+  const self = {
+    draw(rt) {
+      videoPass.uniforms.uVideo.value = texture;
+      videoPass.uniforms.uVideoSize.value.set(video.videoWidth, video.videoHeight);
+      draw(videoPass, rt);
+    },
+    poll() {
+      if (!hasRvfc && !video.paused && video.currentTime !== last) pending = video.currentTime;
+      if (pending === null) return [];
+      const d = pending - last;
+      // Variable frame rate is fine; a loop wrap (d < 0) reuses the last duration.
+      if (d > 0) dt = Math.min(Math.max(d, 1 / 120), 1 / 10);
+      last = pending;
+      pending = null;
+      return [dt];
+    },
+    dispose() {
+      if (hasRvfc) video.cancelVideoFrameCallback(callback);
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      texture.dispose();
+      URL.revokeObjectURL(url);
+    },
+  };
+
+  return new Promise((resolve, reject) => {
+    const onFrame = (_, meta) => {
+      if (last === null) {
+        // The first frame becomes the starting reference, not a step.
+        last = meta.mediaTime;
+        resolve(self);
+      } else {
+        pending = meta.mediaTime;
+      }
+      callback = video.requestVideoFrameCallback(onFrame);
+    };
+    const fail = (err) => {
+      if (last !== null) return; // already playing; later errors just stall it
+      self.dispose();
+      reject(err);
+    };
+    video.addEventListener('error', () => fail(video.error), { once: true });
+    if (hasRvfc) {
+      callback = video.requestVideoFrameCallback(onFrame);
+    } else {
+      video.addEventListener('loadeddata', () => {
+        last = video.currentTime;
+        resolve(self);
+      }, { once: true });
+    }
+    video.play().catch(fail);
+  });
+}
+
+let source = procedural;
+
+// Swap sources without resetting the decoder: hot blocks keep the old imagery
+// and smear it over the new footage. The new frame becomes `prev` so the first
+// step sees no motion or residual across the cut.
+function setSource(next) {
+  source.dispose();
+  source = next;
+  source.draw(src[1]);
 }
 
 // ── Pointer ──────────────────────────────────────────────────────────────────
@@ -229,16 +348,20 @@ canvas.addEventListener('pointerleave', onRelease);
 let time = 0;
 let frameNo = 0;
 
-function step() {
-  time += STEP;
+function step(dt) {
+  time += dt;
   frameNo++;
+  debug.steps++;
 
-  pointer.velocity.lerp(pointer.delta, 0.5);
+  // Tuning is per decoded frame, but the pointer's smoothing and speed
+  // reference are scaled by frame duration so it feels the same at any rate.
+  const k = dt / STEP;
+  pointer.velocity.lerp(pointer.delta, 1 - 0.5 ** k);
   pointer.delta.set(0, 0);
-  pointer.active += (pointer.target - pointer.active) * 0.08;
+  pointer.active += (pointer.target - pointer.active) * (1 - 0.92 ** k);
 
   // 1. New source frame.
-  renderBackground(src[0], time);
+  source.draw(src[0]);
   const [cur, prev] = src;
 
   // 2. The background's own motion vectors.
@@ -259,7 +382,8 @@ function step() {
   bu.uFlow.value = flow.texture;
   bu.uMask.value = mask.texture;
   bu.uPointer.value.copy(pointer.pos);
-  bu.uVelocity.value.copy(pointer.velocity).clampLength(0, 20);
+  bu.uVelocity.value.copy(pointer.velocity).clampLength(0, 20 * k);
+  bu.uSpeedRef.value = params.speedRef * k;
   bu.uTime.value = time;
   draw(blocksPass, state[1]);
   state.reverse();
@@ -301,7 +425,7 @@ function present() {
 }
 
 // ── Debug overlay ('d'): fps readout plus the pointer mask shaded black ─────
-const debug = { on: false, frames: 0, since: performance.now(), el: document.createElement('div') };
+const debug = { on: false, frames: 0, steps: 0, since: performance.now(), el: document.createElement('div') };
 debug.el.className = 'fps';
 debug.el.hidden = true;
 document.body.appendChild(debug.el);
@@ -311,6 +435,7 @@ window.addEventListener('keydown', (e) => {
   debug.on = !debug.on;
   debug.el.hidden = !debug.on;
   debug.frames = 0;
+  debug.steps = 0;
   debug.since = performance.now();
 });
 
@@ -318,8 +443,10 @@ function countFrame(now) {
   if (!debug.on) return;
   debug.frames++;
   if (now - debug.since >= 500) {
-    debug.el.textContent = `${Math.round((debug.frames * 1000) / (now - debug.since))} fps`;
+    const rate = (n) => Math.round((n * 1000) / (now - debug.since));
+    debug.el.textContent = `${rate(debug.frames)} fps · ${rate(debug.steps)} dec`;
     debug.frames = 0;
+    debug.steps = 0;
     debug.since = now;
   }
 }
@@ -331,23 +458,47 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-let last = performance.now();
-let acc = 0;
+// ── Drag and drop a video file to replace the background ────────────────────
+let drags = 0;
+let dropId = 0;
+const hasFiles = (e) => e.dataTransfer?.types.includes('Files');
+
+window.addEventListener('dragenter', (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  if (drags++ === 0) document.body.classList.add('dragging');
+});
+window.addEventListener('dragleave', () => {
+  if (drags && --drags === 0) document.body.classList.remove('dragging');
+});
+window.addEventListener('dragover', (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+window.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  drags = 0;
+  document.body.classList.remove('dragging');
+  const file = [...(e.dataTransfer?.files ?? [])].find((f) => f.type.startsWith('video/'));
+  if (!file) return;
+  const id = ++dropId;
+  try {
+    const next = await videoSource(file);
+    // A later drop superseded this one while it was loading.
+    if (id !== dropId) next.dispose();
+    else setSource(next);
+  } catch (err) {
+    console.warn(`Can't play ${file.name}:`, err);
+  }
+});
 
 function frame(now) {
   requestAnimationFrame(frame);
-  acc += Math.min((now - last) / 1000, 0.1);
-  last = now;
   countFrame(now);
-  // Fixed-rate decode, at most two steps per display frame.
-  let n = 0;
-  while (acc >= STEP && n < 2) {
-    step();
-    acc -= STEP;
-    n++;
-  }
-  if (acc > STEP) acc = 0;
-  if (n) present();
+  const due = source.poll(now);
+  for (const dt of due) step(dt);
+  if (due.length) present();
 }
 
 requestAnimationFrame(frame);
