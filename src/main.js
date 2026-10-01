@@ -20,7 +20,7 @@ const STEP = 1 / 60;
 const QP = 28;
 
 const params = {
-  radius: 8 * MB,
+  radius: 6.4 * MB,
   swirl: 2.2,
   inflow: 0.9,
   breath: 0.5,
@@ -34,7 +34,7 @@ const params = {
   // Healing: heat only drains where the background itself moves fast
   // (Lucas-Kanade speed in internal px per step, ramping from x to y).
   flowEps: 2e-4,
-  healSpeed: new THREE.Vector2(0.15, 0.5),
+  healSpeed: new THREE.Vector2(0.3, 0.9),
   healRate: 0.02,
   qstep: (0.625 * 2 ** (QP / 6)) / 255,
 };
