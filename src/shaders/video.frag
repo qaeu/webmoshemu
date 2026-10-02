@@ -20,5 +20,6 @@ void main() {
          + texture(uVideo, uv + vec2(-o.x, o.y)).rgb
          + texture(uVideo, uv + vec2(o.x, o.y)).rgb;
 
-  fragColor = vec4(0.25 * c, 1.0);
+  // Alpha 0: a clean frame carries no mosh (ref's alpha, see reconstruct.frag).
+  fragColor = vec4(0.25 * c, 0.0);
 }

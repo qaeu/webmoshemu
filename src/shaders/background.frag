@@ -72,5 +72,6 @@ void main() {
   vec2 e = vUv - 0.5;
   col *= 1.0 - 0.55 * dot(e, e);
 
-  fragColor = vec4(col, 1.0);
+  // Alpha 0: a clean frame carries no mosh (ref's alpha, see reconstruct.frag).
+  fragColor = vec4(col, 0.0);
 }

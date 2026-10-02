@@ -46,17 +46,18 @@ const params = {
   bloomFrac: 0.3,
   bloomRelax: 0.15,
   // Melt: a share of inter blocks whose offset passes meltMv px switch to
-  // bilinear motion compensation (warped per pixel when unsplit).
-  meltMv: 2.5,
+  // bicubic sub-pel motion compensation (warped per pixel when unsplit).
+  meltMv: 5.5,
   meltFrac: 0.3,
   // Rim smear: 8x8 partitions within smearBand heat of healing drip their
   // neighbour's edge in.
   smear: 0.6,
   smearBand: 0.08,
-  // Colour drift on inter pixels: chroma's share of the pointer offset, a
-  // seeded per-step Cb/Cr bias at full heat, and residual over-application.
+  // Colour drift on melted pixels: chroma's share of the pointer offset and a
+  // seeded per-step Cb/Cr bias at full heat. Residual over-application on a
+  // share of inter partitions.
   chromaLag: 0.85,
-  dcDrift: 0.0015,
+  dcDrift: 0.0008,
   resBloomFrac: 0.1,
   resBloom: 2,
   // Zone mask: a soft disc minus drifting simplex noise scaled to 0..0.5.
@@ -186,6 +187,8 @@ const reconstructPass = pass(reconstructFrag, {
   uResBloom: { value: params.resBloom },
   uSmear: { value: params.smear },
   uSmearBand: { value: params.smearBand },
+  uHealSpeed: { value: params.healSpeed },
+  uHealRate: { value: params.healRate },
 });
 const presentPass = pass(presentFrag, {
   uRef: { value: null },
@@ -226,10 +229,10 @@ function allocate() {
   // Source frames carry a mip chain: the image pyramid for flow.frag.
   src = [target(w, h, THREE.LinearFilter, true), target(w, h, THREE.LinearFilter, true)];
   state = [target(w / MB, h / MB), target(w / MB, h / MB)];
-  // Linear for the bilinear fetches in reconstruct's melt path only; every
+  // Linear for the bilinear vector warp in reconstruct's melt path only; every
   // other read is texelFetch, which ignores filtering.
   sub = [target(w / SB, h / SB, THREE.LinearFilter), target(w / SB, h / SB, THREE.LinearFilter)];
-  ref = [target(w, h, THREE.LinearFilter), target(w, h, THREE.LinearFilter)];
+  ref = [target(w, h), target(w, h)];
   coef = target(w, h);
   // Separable DCT intermediate, shared by the forward and inverse transforms.
   tmp = target(w, h);
