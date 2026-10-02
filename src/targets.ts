@@ -22,18 +22,20 @@ export interface Targets {
   h: number;
   /** Clean source frames, mipmapped; `[1]` is the previous frame. */
   src: PingPong<RT>;
-  /** Per-macroblock melt latch, heat and seed. */
+  /** Per-macroblock melt latch, intra flag and seed. */
   state: PingPong<RT>;
   /** Per-sub-block vector offset and partition code (linear filtered). */
   sub: PingPong<RT>;
-  /** Decoded frames; `a` is each pixel's mosh margin. */
+  /** Decoded frames; `a` is 1 where a pixel is moshed. */
   ref: PingPong<RT>;
   /** Quantised DCT coefficients, laid out block-locally. */
   coef: RT;
   /** Separable DCT intermediate, shared by the forward and inverse transforms. */
   tmp: RT;
-  /** Per-macroblock background motion. */
-  flow: RT;
+  /** Per-macroblock Lucas–Kanade motion estimate. */
+  lk: RT;
+  /** Per-macroblock background motion found by the encoder's search. */
+  flow: PingPong<RT>;
   /** Per-macroblock pointer zone strength. */
   mask: RT;
 }
@@ -65,13 +67,14 @@ export function allocateTargets(w: number, h: number): Targets {
     ref: [target(w, h), target(w, h)],
     coef: target(w, h),
     tmp: target(w, h),
-    flow: target(w / MB, h / MB),
+    lk: target(w / MB, h / MB),
+    flow: [target(w / MB, h / MB), target(w / MB, h / MB)],
     mask: target(w / MB, h / MB),
   };
 }
 
 /** Free every target in `t`. */
 export function disposeTargets(t: Targets): void {
-  const { src, state, sub, ref, coef, tmp, flow, mask } = t;
-  [...src, ...state, ...sub, ...ref, coef, tmp, flow, mask].forEach((rt) => rt.dispose());
+  const { src, state, sub, ref, coef, tmp, lk, flow, mask } = t;
+  [...src, ...state, ...sub, ...ref, coef, tmp, lk, ...flow, mask].forEach((rt) => rt.dispose());
 }

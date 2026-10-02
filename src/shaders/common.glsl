@@ -28,11 +28,11 @@ float hash12(vec2 p) {
   return fract((p3.x + p3.y) * p3.z);
 }
 
-// Partitions. Heat lives per 16x16 macroblock (state); vectors live per 8x8
-// sub-block (sub), where b holds the macroblock's partition code, the same in
-// all four siblings: 0 = 16x16, 1 = 16x8 (two rows), 2 = 8x16 (two columns),
-// 3 = four 8x8. The helpers take values the pass has already fetched, so no
-// samplers are declared here.
+// Partitions. Intra/inter lives per 16x16 macroblock (state); vectors live
+// per 8x8 sub-block (sub), where b holds the macroblock's partition code, the
+// same in all four siblings: 0 = 16x16, 1 = 16x8 (two rows), 2 = 8x16 (two
+// columns), 3 = four 8x8. The helpers take values the pass has already
+// fetched (or samplers as arguments), so no samplers are declared here.
 
 // The bottom-left sub-block of sb's partition group.
 ivec2 groupAnchor(float code, ivec2 sb) {
@@ -53,17 +53,31 @@ float groupSeed(vec4 s, vec4 sub, ivec2 p) {
   return hash12(vec2(groupAnchor(sub.b, p / SB)) + 7.1);
 }
 
-float interThreshold(float seed) {
-  return 0.06 + 0.55 * seed;
+// Every macroblock is inter-coded (P) unless the encoder chose intra for it
+// this step (blocks.frag). The only inter test: every DCT pass, reconstruct
+// and present must agree on it. s = state at p / MB.
+bool isInter(vec4 s) {
+  return s.g < 0.5;
 }
 
-// A partition is inter-coded (P) while its macroblock's heat is above the
-// partition's own random threshold, so the zone edge is ragged at 8 px and
-// heals partition by partition. The only inter test: every DCT pass,
-// reconstruct and present must agree on it. s = state at p / MB, sub = sub at
-// p / SB.
-bool isInterAt(vec4 s, vec4 sub, ivec2 p) {
-  return s.b > interThreshold(groupSeed(s, sub, p));
+// Motion-compensated prediction of pixel p from ref with fetch offset v (px),
+// as YCbCr: luma at integer-pel, chroma on the 4:2:0 grid in 2 px steps, both
+// rounded with the step's shared dither (phase.xy luma, phase.zw chroma).
+// Fetches past the frame clamp to its edge, like unrestricted motion vectors
+// over a reference padded by repeating its border.
+vec3 predict(sampler2D ref, ivec2 p, vec2 v, vec4 phase) {
+  ivec2 size = textureSize(ref, 0);
+  ivec2 mv = ivec2(floor(v + phase.xy));
+  vec3 ycc;
+  ycc.x = rgb2ycc(texelFetch(ref, clamp(p + mv, ivec2(0), size - 1), 0).rgb).x;
+  ivec2 mvc = ivec2(floor(v * 0.5 + phase.zw)) * 2;
+  ivec2 c0 = clamp((p / 2) * 2 + mvc, ivec2(0), size - 2);
+  ycc.yz = 0.25 * (
+      rgb2ycc(texelFetch(ref, c0, 0).rgb).yz
+    + rgb2ycc(texelFetch(ref, c0 + ivec2(1, 0), 0).rgb).yz
+    + rgb2ycc(texelFetch(ref, c0 + ivec2(0, 1), 0).rgb).yz
+    + rgb2ycc(texelFetch(ref, c0 + ivec2(1, 1), 0).rgb).yz);
+  return ycc;
 }
 
 // A pixel's fetch offset: its partition's pointer offset (sub.rg) on top of

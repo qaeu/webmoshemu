@@ -2,8 +2,8 @@
 // (coarse-to-fine) Lucas-Kanade estimate on luma between the previous and
 // current source frames.
 //   rg = motion (internal px per step, the direction the content moves), b = speed.
-// This is the vector an honest encoder would find; where it is strong, the
-// encoder would refresh the block and wash any mosh out of it.
+// Only a starting point: search.frag uses it as a predictor for the encoder's
+// motion search, whose result is the vector every later pass uses.
 //
 // The pyramid is the source targets' own mip chain. At level L an 8x8 sample
 // window with 2^L px spacing (2 px at level 0) is centred on the block, so the

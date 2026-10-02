@@ -5,8 +5,6 @@
  *
  * @module
  */
-import * as THREE from 'three';
-
 // ── Tuning ───────────────────────────────────────────────────────────────────
 // The decoder runs at a fixed, macroblock-aligned internal resolution so block
 // size stays a constant fraction of the screen on every device.
@@ -29,10 +27,11 @@ const QP = 28;
 /**
  * Decoder tuning, passed to the shaders as uniforms by `createPasses()`.
  *
- * Units: "px" are internal decoder px (see {@link SHORT_SIDE}), "step" is one
- * decoded frame, and heat is 0..1 per macroblock. A partition is inter-coded
- * (moshed) while its macroblock's heat exceeds the partition's seeded
- * threshold, which lies in 0.06..0.61 (`interThreshold` in `common.glsl`).
+ * Units: "px" are internal decoder px (see {@link SHORT_SIDE}) and "step" is
+ * one decoded frame. Every macroblock is inter-coded unless the encoder picks
+ * intra for it (see {@link params.intraBias}); a pixel is moshed once the
+ * pointer's offset starts it (see {@link params.mvOn}) or it fetches a moshed
+ * pixel, and stays moshed until its block goes intra.
  * Vectors are fetch offsets: a pixel copies the previous decoded frame from
  * `p + mv`, so content moves opposite to the vector.
  */
@@ -63,7 +62,7 @@ export const params = {
   breath: 0.5,
   /**
    * Smoothed pointer speed, px per step at 60 Hz, at which the pointer's
-   * effect is at full strength. Heating, vortex gain and partition splitting
+   * effect is at full strength. Vortex gain, drag and partition splitting
    * all scale with `min(speed / speedRef, 1)`, so a still pointer does
    * nothing. Lower makes slow strokes as strong as fast ones. Scaled by the
    * step duration, so it means the same at any source frame rate.
@@ -110,24 +109,32 @@ export const params = {
   /** Multiplier on {@link params.mvRelax} for blooming macroblocks; lower holds longer. */
   bloomRelax: 0.15,
   /**
-   * Pointer offset, px, that a moshed macroblock's largest sub-block vector
+   * Pointer offset, px, a partition needs before it starts moshing clean
+   * pixels, scaled per partition by a seeded `1..2x` so the zone's edge is
+   * ragged. Pixels that are already moshed use any offset. Also the offset
+   * below which a melt latch clears.
+   */
+  mvOn: 0.75,
+  /**
+   * Pointer offset, px, that an inter macroblock's largest sub-block vector
    * must exceed before it can melt. Melted blocks use bicubic sub-pixel
    * motion compensation (content smears as it travels) and get the colour
-   * drift below. The melt latches until the block goes intra.
+   * drift below. The melt latches until the block's offsets relax below
+   * {@link params.mvOn} or it goes intra.
    */
   meltMv: 5.5,
   /** Seeded share of macroblocks, 0..1, that melt once past {@link params.meltMv}. */
   meltFrac: 0.3,
   /**
-   * Rim smear opacity, 0..1. A moshed 8x8 partition whose macroblock's heat
-   * is within {@link params.smearBand} of its threshold blends in the decoded
+   * Rim smear opacity, 0..1. A moshed 8x8 partition whose pointer offset is
+   * under {@link params.smearMv} (the zone's fringe) blends in the decoded
    * edge just outside it (seeded: left column or row above), at `smear` on
    * that side fading linearly to 0 across the partition. Only blocks split
    * into four 8x8 partitions smear.
    */
   smear: 0.35,
-  /** Heat above a partition's threshold within which it smears; see {@link params.smear}. */
-  smearBand: 0.08,
+  /** Pointer offset, px, below which 8x8 partitions smear; see {@link params.smear}. */
+  smearMv: 1.5,
   /**
    * Melted pixels only: chroma is fetched with `chromaLag` times the
    * pointer offset while luma uses all of it, so below 1 colour trails the
@@ -135,8 +142,8 @@ export const params = {
    */
   chromaLag: 0.85,
   /**
-   * Melted pixels only: a Cb/Cr bias added every step, scaled by heat in a
-   * seeded per-partition direction. It accumulates through the feedback loop,
+   * Melted pixels only: a Cb/Cr bias added every step in a seeded
+   * per-partition direction. It accumulates through the feedback loop,
    * so each melted partition drifts steadily towards its own hue.
    */
   dcDrift: 0.0008,
@@ -164,23 +171,29 @@ export const params = {
    */
   flowEps: 2e-4,
   /**
-   * Background speed range, px per step, over which healing ramps in
-   * (`smoothstep(x, y, speed)`). Below `x` heat never drains, so mosh over
-   * a static background stays indefinitely; at `y` and above heat drains at
-   * the full {@link params.healRate}.
+   * Radius, px, of the encoder's coarse motion-search window around its best
+   * predicted vector (`search.frag`, in 4 px steps on the quarter-resolution
+   * mip). Predictors include last step's vectors, so steady motion is tracked
+   * at any speed; this bounds how much a block's motion can jump in one step
+   * and still be found. Cost grows with its square.
    */
-  healSpeed: new THREE.Vector2(0.3, 16.0),
+  searchRange: 24,
   /**
-   * Heat removed per step at full background speed. Mosh carried out of hot
-   * blocks along the background motion loses margin at the same rate. A
-   * fully hot block (heat 1) heals completely in about `0.94 / healRate` steps.
+   * Intra decision margin: mean absolute YCbCr error per pixel (0..1 values,
+   * summed over Y, Cb and Cr) by which a macroblock's best intra prediction
+   * (H.264 Intra16x16 vertical, horizontal or DC from its coded neighbours)
+   * must beat inter prediction from the previous source frame along the
+   * background's vector. Intra is the only thing that clears mosh, so lower
+   * clears faster; it happens where the footage shows something the
+   * previous frame didn't (content panning in at an edge, disocclusion, cuts
+   * within the clip).
    */
-  healRate: 0.01,
+  intraBias: 0.16,
   /**
    * DC quantiser step for the residual, on 0..1 values, from {@link QP} like
    * H.264 (`0.625 * 2^(QP / 6) / 255`). `dctCols.frag` scales it up by
-   * frequency and by 1.6 for chroma. Coarser steps drop more of the source's
-   * frame-to-frame change from moshed blocks.
+   * frequency and by 1.6 for chroma. Coarser steps drop more of the
+   * motion-compensated residual from moshed blocks.
    */
   qstep: (0.625 * 2 ** (QP / 6)) / 255,
 };

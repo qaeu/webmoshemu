@@ -3,12 +3,11 @@
 // One output texel per coefficient, laid out block-locally.
 uniform sampler2D uTmp;
 uniform sampler2D uState;
-uniform sampler2D uSub;
 uniform float uQstep;
 
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
-  if (!isInterAt(texelFetch(uState, p / MB, 0), texelFetch(uSub, p / SB, 0), p)) {
+  if (!isInter(texelFetch(uState, p / MB, 0))) {
     fragColor = vec4(0.0);
     return;
   }

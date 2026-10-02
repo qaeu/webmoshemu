@@ -2,11 +2,10 @@
 // transformed back along x. reconstruct.frag finishes the transform over v.
 uniform sampler2D uCoef;
 uniform sampler2D uState;
-uniform sampler2D uSub;
 
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
-  if (!isInterAt(texelFetch(uState, p / MB, 0), texelFetch(uSub, p / SB, 0), p)) {
+  if (!isInter(texelFetch(uState, p / MB, 0))) {
     fragColor = vec4(0.0);
     return;
   }
