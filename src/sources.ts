@@ -29,6 +29,13 @@ export interface Source {
    * decoder steps once for each.
    */
   poll(now: number): number[];
+  /**
+   * Pause or resume. While paused, {@link Source.poll} returns only frames
+   * requested with {@link Source.advance}.
+   */
+  setPaused(paused: boolean): void;
+  /** While paused, make the next frame due (once it is ready). */
+  advance(): void;
   /** Release the source's resources. It is not used afterwards. */
   dispose(): void;
 }
@@ -40,14 +47,22 @@ export interface Source {
 export function createProcedural(gl: Gl, passes: Passes): Source {
   let last = performance.now();
   let acc = 0;
+  let paused = false;
+  let queued = false;
   return {
     draw(rt, time) {
       passes.background.uniforms.uTime.value = time;
       gl.draw(passes.background, rt);
     },
     poll(now) {
-      acc += Math.min((now - last) / 1000, 0.1);
+      const elapsed = Math.min((now - last) / 1000, 0.1);
       last = now;
+      if (paused) {
+        const due = queued ? [STEP] : [];
+        queued = false;
+        return due;
+      }
+      acc += elapsed;
       const due: number[] = [];
       while (acc >= STEP && due.length < 2) {
         due.push(STEP);
@@ -55,6 +70,14 @@ export function createProcedural(gl: Gl, passes: Passes): Source {
       }
       if (acc > STEP) acc = 0;
       return due;
+    },
+    setPaused(p) {
+      paused = p;
+      queued = false;
+      acc = 0;
+    },
+    advance() {
+      queued = true;
     },
     dispose() {},
   };
@@ -84,6 +107,9 @@ export function videoSource(file: File, gl: Gl, passes: Passes): Promise<Source>
   let pending: number | null = null; // media time of the newest unconsumed frame
   let last: number | null = null;
   let dt = 1 / 30;
+  let paused = false;
+  let stepping = false; // a paused step is due once the seek lands
+  let seekTo: number | null = null; // start of the frame the latest step seeks to
 
   const self: Source = {
     draw(rt) {
@@ -92,14 +118,33 @@ export function videoSource(file: File, gl: Gl, passes: Passes): Promise<Source>
       gl.draw(passes.video, rt);
     },
     poll() {
-      if (!hasRvfc && !video.paused && video.currentTime !== last) pending = video.currentTime;
-      if (pending === null) return [];
+      if (!hasRvfc && !video.seeking && video.currentTime !== last) pending = video.currentTime;
+      // Mid-seek, any pending frame is stale; the seeked one replaces it.
+      if (pending === null || video.seeking) return [];
       const d = pending - last!; // set before the source resolves
       // Variable frame rate is fine; a loop wrap (d < 0) reuses the last duration.
       if (d > 0) dt = Math.min(Math.max(d, 1 / 120), 1 / 10);
       last = pending;
       pending = null;
+      if (paused && !stepping) return [];
+      stepping = false;
+      seekTo = null;
       return [dt];
+    },
+    setPaused(p) {
+      paused = p;
+      stepping = false;
+      seekTo = null;
+      if (p) video.pause();
+      else video.play().catch((err) => console.warn("Can't resume video:", err));
+    },
+    advance() {
+      // Seek to the middle of the next frame, wrapping like the loop does.
+      let next = (seekTo ?? last!) + dt;
+      if (next + dt / 2 >= video.duration) next = 0;
+      seekTo = next;
+      stepping = true;
+      video.currentTime = next + dt / 2;
     },
     dispose() {
       if (hasRvfc) video.cancelVideoFrameCallback(callback);

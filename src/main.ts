@@ -29,6 +29,24 @@ window.addEventListener('resize', () => {
   if (decoder.resize(window.innerWidth, window.innerHeight)) pointer.reset();
 });
 
+// Space pauses and resumes; '.' pauses and advances one source frame.
+let paused = false;
+window.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === ' ') {
+    e.preventDefault();
+    if (e.repeat) return;
+    paused = !paused;
+    decoder.source.setPaused(paused);
+  } else if (e.key === '.') {
+    if (!paused) {
+      paused = true;
+      decoder.source.setPaused(true);
+    }
+    decoder.source.advance();
+  }
+});
+
 let dropId = 0;
 attachDrop(async (file) => {
   const id = ++dropId;
@@ -36,7 +54,10 @@ attachDrop(async (file) => {
     const next = await videoSource(file, gl, passes);
     // A later drop superseded this one while it was loading.
     if (id !== dropId) next.dispose();
-    else decoder.setSource(next);
+    else {
+      next.setPaused(paused);
+      decoder.setSource(next);
+    }
   } catch (err) {
     console.warn(`Can't play ${file.name}:`, err);
   }
@@ -49,7 +70,8 @@ function frame(now: number) {
   const due = decoder.source.poll(now);
   debug.countSteps(due.length);
   for (const dt of due) decoder.step(dt, pointer);
-  if (due.length) decoder.present(debug.on);
+  // While paused, keep presenting so the debug toggle and resizes show.
+  if (due.length || paused) decoder.present(debug.on);
 }
 
 requestAnimationFrame(frame);
