@@ -14,7 +14,7 @@ export class Pointer {
   pos = new THREE.Vector2();
   /** Smoothed motion in px per step; see {@link Pointer.advance}. */
   velocity = new THREE.Vector2();
-  /** Smoothed presence, 0..1: eases to 1 while the pointer is over the canvas. */
+  /** Smoothed presence, 0..1: eases to 1 while a button or touch is held down. */
   active = 0;
   private last: THREE.Vector2 | null = null;
   private delta = new THREE.Vector2();
@@ -28,6 +28,7 @@ export class Pointer {
     canvas.addEventListener('pointerdown', (e) => {
       canvas.setPointerCapture(e.pointerId);
       this.last = null;
+      this.target = 1;
       this.onPointer(e);
     });
     canvas.addEventListener('pointermove', this.onPointer);
@@ -62,8 +63,8 @@ export class Pointer {
     );
   }
 
+  // Hover still tracks the position, so a press starts where the pointer is.
   private onPointer = (e: PointerEvent): void => {
-    this.target = 1;
     const samples = e.getCoalescedEvents?.() ?? [];
     for (const s of samples.length ? samples : [e]) {
       const p = this.toInternal(s);
@@ -74,9 +75,7 @@ export class Pointer {
   };
 
   private onRelease = (e: PointerEvent): void => {
-    if (e.type === 'pointerleave' || e.pointerType !== 'mouse') {
-      this.target = 0;
-      this.last = null;
-    }
+    this.target = 0;
+    if (e.type === 'pointerleave' || e.pointerType !== 'mouse') this.last = null;
   };
 }

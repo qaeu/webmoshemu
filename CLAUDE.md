@@ -12,7 +12,7 @@ npm run typecheck # tsc only
 npm run preview   # serve the built dist/
 ```
 
-There are no tests, linter, or formatter configured; `tsc` (strict) is the only static check and gates `npm run build`. Verification is visual: run the dev server and move the pointer over the canvas.
+There are no tests, linter, or formatter configured; `tsc` (strict) is the only static check and gates `npm run build`. Verification is visual: run the dev server and press and drag on the canvas (the effect only runs while a mouse button or touch is held).
 
 Pushing to `main` deploys to GitHub Pages via `.github/workflows/deploy-pages.yml` (Node 22, `npm ci && npm run build`). `vite.config.js` sets `base` to `/<repo>/` only when running in GitHub Actions, so local builds use `/`.
 
