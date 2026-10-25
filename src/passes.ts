@@ -9,6 +9,7 @@ import { params } from './config';
 import { pass } from './gl';
 import backgroundFrag from './shaders/background.frag?raw';
 import videoFrag from './shaders/video.frag?raw';
+import imageFrag from './shaders/image.frag?raw';
 import flowFrag from './shaders/flow.frag?raw';
 import searchFrag from './shaders/search.frag?raw';
 import maskFrag from './shaders/mask.frag?raw';
@@ -43,6 +44,12 @@ export function createPasses() {
       uVideo: { value: null },
       uSize: { value: new THREE.Vector2() },
       uVideoSize: { value: new THREE.Vector2() },
+    }),
+    /** A dropped image painted over the decoded frame, cover-cropped to the internal size. */
+    image: pass<{ uImage: Tex; uSize: THREE.Vector2; uImageSize: THREE.Vector2 }>(imageFrag, {
+      uImage: { value: null },
+      uSize: { value: new THREE.Vector2() },
+      uImageSize: { value: new THREE.Vector2() },
     }),
     /** Lucas–Kanade motion estimate per macroblock (pyramidal): `rg` px/step, `b` speed. */
     flow: pass<{ uCur: Tex; uPrev: Tex; uFlowEps: number }>(flowFrag, {

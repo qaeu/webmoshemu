@@ -184,3 +184,24 @@ export function videoSource(file: File, gl: Gl, passes: Passes): Promise<Source>
     video.play().catch(fail);
   });
 }
+
+/**
+ * Load an image file as a mipmapped texture for {@link Decoder.paint}.
+ *
+ * @returns Rejects if the file can't be decoded.
+ */
+export async function loadImage(file: File): Promise<THREE.Texture> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const texture = new THREE.Texture(img);
+    // Display-encoded values, like every source.
+    texture.colorSpace = THREE.NoColorSpace;
+    texture.needsUpdate = true;
+    return texture;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}

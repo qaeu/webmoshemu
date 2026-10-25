@@ -4,14 +4,15 @@
  * @module
  */
 
-// ── Drag and drop a video file to replace the background ────────────────────
+// ── Drag and drop a video or image file ─────────────────────────────────────
 /**
  * Accept file drops anywhere on the window, toggling the `dragging` body class
  * while files are dragged over it.
  *
  * @param onVideo - Called with the first dropped `video/*` file, if any.
+ * @param onImage - Called with the first dropped `image/*` file if no video was dropped.
  */
-export function attachDrop(onVideo: (file: File) => void): void {
+export function attachDrop(onVideo: (file: File) => void, onImage: (file: File) => void): void {
   let drags = 0;
   const hasFiles = (e: DragEvent) => e.dataTransfer?.types.includes('Files');
 
@@ -32,7 +33,10 @@ export function attachDrop(onVideo: (file: File) => void): void {
     e.preventDefault();
     drags = 0;
     document.body.classList.remove('dragging');
-    const file = [...(e.dataTransfer?.files ?? [])].find((f) => f.type.startsWith('video/'));
-    if (file) onVideo(file);
+    const files = [...(e.dataTransfer?.files ?? [])];
+    const video = files.find((f) => f.type.startsWith('video/'));
+    const image = files.find((f) => f.type.startsWith('image/'));
+    if (video) onVideo(video);
+    else if (image) onImage(image);
   });
 }

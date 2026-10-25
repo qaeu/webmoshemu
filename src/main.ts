@@ -1,6 +1,6 @@
 /**
  * Entry point: wires the renderer, passes, decoder, pointer, debug overlay
- * and video drops together, and runs the frame loop.
+ * and video and image drops together, and runs the frame loop.
  *
  * @module
  */
@@ -12,7 +12,7 @@ import { attachDrop } from './drop';
 import { createGl } from './gl';
 import { createPasses } from './passes';
 import { Pointer } from './pointer';
-import { createProcedural, videoSource } from './sources';
+import { createProcedural, loadImage, videoSource } from './sources';
 
 const gl = createGl(document.querySelector<HTMLElement>('#app')!);
 const passes = createPasses();
@@ -47,6 +47,8 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+// A dropped video replaces the source; a dropped image replaces the decoded
+// frame, and the current source's motion plays on over it.
 let dropId = 0;
 attachDrop(async (file) => {
   const id = ++dropId;
@@ -60,6 +62,15 @@ attachDrop(async (file) => {
     }
   } catch (err) {
     console.warn(`Can't play ${file.name}:`, err);
+  }
+}, async (file) => {
+  try {
+    const image = await loadImage(file);
+    decoder.paint(image);
+    image.dispose();
+    decoder.present(debug.on);
+  } catch (err) {
+    console.warn(`Can't load ${file.name}:`, err);
   }
 });
 

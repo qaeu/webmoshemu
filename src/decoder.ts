@@ -71,6 +71,7 @@ export class Decoder {
     const t = allocateTargets(w, h);
     this.passes.background.uniforms.uSize.value.set(w, h);
     this.passes.video.uniforms.uSize.value.set(w, h);
+    this.passes.image.uniforms.uSize.value.set(w, h);
 
     // Start clean: zero block state, and a first source frame to diff against.
     const { renderer } = this.gl;
@@ -93,6 +94,23 @@ export class Decoder {
     this.source = next;
     this.source.draw(this.t.src[1], this.time);
     this.cutPending = true;
+  }
+
+  /**
+   * Replace the latest decoded frame with `image`, cover-cropped, every pixel
+   * marked moshed. The source keeps playing, so its motion vectors and
+   * residuals carry the image from the next step on, until intra blocks
+   * replace it.
+   *
+   * @param image - Its size is read from `image.image`; the caller disposes it.
+   */
+  paint(image: THREE.Texture): void {
+    const iu = this.passes.image.uniforms;
+    const { width, height } = image.image as { width: number; height: number };
+    iu.uImage.value = image;
+    iu.uImageSize.value.set(width, height);
+    this.gl.draw(this.passes.image, this.t.ref[0]);
+    iu.uImage.value = null;
   }
 
   /**
