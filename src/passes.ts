@@ -73,10 +73,11 @@ export function createPasses() {
       uSearchRange: { value: params.searchRange },
       uFlowEps: { value: params.flowEps },
     }),
-    /** Pointer zone strength per macroblock. */
+    /** Pointer zone strength per macroblock: `r` moshing, `g` erasing. */
     mask: pass<{
       uPointer: THREE.Vector2;
       uActive: number;
+      uErase: number;
       uRadius: number;
       uTime: number;
       uNoiseScale: number;
@@ -84,6 +85,7 @@ export function createPasses() {
     }>(maskFrag, {
       uPointer: { value: new THREE.Vector2() },
       uActive: { value: 0 },
+      uErase: { value: 0 },
       uRadius: { value: params.radius },
       uTime: { value: 0 },
       uNoiseScale: { value: params.noiseScale },
@@ -96,8 +98,11 @@ export function createPasses() {
       uCur: Tex;
       uPrev: Tex;
       uFlow: Tex;
+      uMask: Tex;
+      uRef: Tex;
       uPhase: THREE.Vector4;
       uIntraBias: number;
+      uEraseClear: number;
       uMvOn: number;
       uMeltMv: number;
       uMeltFrac: number;
@@ -107,8 +112,11 @@ export function createPasses() {
       uCur: { value: null },
       uPrev: { value: null },
       uFlow: { value: null },
+      uMask: { value: null },
+      uRef: { value: null },
       uPhase: { value: new THREE.Vector4() },
       uIntraBias: { value: params.intraBias },
+      uEraseClear: { value: params.eraseClear },
       uMvOn: { value: params.mvOn },
       uMeltMv: { value: params.meltMv },
       uMeltFrac: { value: params.meltFrac },
@@ -133,6 +141,7 @@ export function createPasses() {
       uLamHi: number;
       uBloomFrac: number;
       uBloomRelax: number;
+      uEraseRate: number;
     }>(subFrag, {
       uSub: { value: null },
       uState: { value: null },
@@ -152,6 +161,7 @@ export function createPasses() {
       uLamHi: { value: params.lamHi },
       uBloomFrac: { value: params.bloomFrac },
       uBloomRelax: { value: params.bloomRelax },
+      uEraseRate: { value: params.eraseRate },
     }),
     /** Forward DCT rows of the motion-compensated residual. */
     dctRows: pass<{ uCur: Tex; uPrev: Tex; uState: Tex; uFlow: Tex; uPhase: THREE.Vector4 }>(
@@ -183,6 +193,7 @@ export function createPasses() {
       uState: Tex;
       uSub: Tex;
       uFlow: Tex;
+      uMask: Tex;
       uResidualGain: number;
       uPhase: THREE.Vector4;
       uCut: number;
@@ -193,6 +204,7 @@ export function createPasses() {
       uResBloom: number;
       uSmear: number;
       uSmearMv: number;
+      uEraseRate: number;
     }>(reconstructFrag, {
       uRef: { value: null },
       uCur: { value: null },
@@ -200,6 +212,7 @@ export function createPasses() {
       uState: { value: null },
       uSub: { value: null },
       uFlow: { value: null },
+      uMask: { value: null },
       uResidualGain: { value: 1 },
       uPhase: { value: new THREE.Vector4() },
       uCut: { value: 0 },
@@ -210,6 +223,7 @@ export function createPasses() {
       uResBloom: { value: params.resBloom },
       uSmear: { value: params.smear },
       uSmearMv: { value: params.smearMv },
+      uEraseRate: { value: params.eraseRate },
     }),
     /** Draws the decoded frame (or the clean source) and the debug overlay to the screen. */
     present: pass<{

@@ -190,6 +190,21 @@ export const params = {
    */
   intraBias: 0.16,
   /**
+   * Erasing (right button): fraction per step, 0..1, at full mask strength,
+   * by which a partition's pointer offset eases back to the background's own
+   * motion and moshed pixels' colour eases towards the source. Scaled by the
+   * macroblock's mask strength, so the zone's soft rim and noise dead spots
+   * fade slower or not at all. Higher erases faster.
+   */
+  eraseRate: 0.12,
+  /**
+   * Erasing: a macroblock in the erase zone is forced intra (clearing its
+   * mosh outright) once its decoded pixels' mean absolute YCbCr error against
+   * the source (0..1 values summed over Y, Cb and Cr, clean pixels counting
+   * 0) falls below this. Higher snaps to the source sooner, from further off.
+   */
+  eraseClear: 0.03,
+  /**
    * DC quantiser step for the residual, on 0..1 values, from {@link QP} like
    * H.264 (`0.625 * 2^(QP / 6) / 255`). `dctCols.frag` scales it up by
    * frequency and by 1.6 for chroma. Coarser steps drop more of the

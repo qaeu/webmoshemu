@@ -16,6 +16,8 @@ export class Pointer {
   velocity = new THREE.Vector2();
   /** Smoothed presence, 0..1: eases to 1 while a button or touch is held down. */
   active = 0;
+  /** Whether the latest press erases mosh (right button) rather than making it. */
+  erase = false;
   private last: THREE.Vector2 | null = null;
   private delta = new THREE.Vector2();
   private target = 0;
@@ -29,8 +31,10 @@ export class Pointer {
       canvas.setPointerCapture(e.pointerId);
       this.last = null;
       this.target = 1;
+      this.erase = e.button === 2;
       this.onPointer(e);
     });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('pointermove', this.onPointer);
     canvas.addEventListener('pointerup', this.onRelease);
     canvas.addEventListener('pointercancel', this.onRelease);

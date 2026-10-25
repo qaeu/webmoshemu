@@ -31,6 +31,7 @@ uniform float uLamLo;      // rate-distortion lambda range (px^2 per vector), by
 uniform float uLamHi;
 uniform float uBloomFrac;  // share of macroblocks whose offsets persist
 uniform float uBloomRelax; // their relax, as a fraction of uMvRelax
+uniform float uEraseRate;  // extra relax at full erase strength (mask.g)
 
 vec2 vortexAt(vec2 c) {
   vec2 d = c - uPointer;
@@ -59,7 +60,8 @@ void main() {
   ivec2 o = mb * 2;
   int self = (sb.x & 1) + 2 * (sb.y & 1);
   vec4 s = texelFetch(uState, mb, 0);
-  float w = texelFetch(uMask, mb, 0).r;
+  vec2 m = texelFetch(uMask, mb, 0).rg;
+  float w = m.r;
   float gain = min(length(uVelocity) / uSpeedRef, 1.0);
   float wg = w * gain;
 
@@ -112,7 +114,8 @@ void main() {
   // always the measured flow (added in pixelMv), whatever the source. Bloom
   // blocks hold their vector much longer, like a duplicated P-frame.
   float relax = uMvRelax * (hash12(vec2(mb) + 2.3) < uBloomFrac ? uBloomRelax : 1.0);
-  vec2 off = pm * (1.0 - relax);
+  // Erasing eases the vector back to the background's own motion.
+  vec2 off = pm * (1.0 - relax) * (1.0 - m.g * uEraseRate);
   off = mix(off, tm, wg * 0.35);
   float l = length(off);
   if (l > 24.0) off *= 24.0 / l;

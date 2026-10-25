@@ -1,10 +1,11 @@
 // Moshed pixels (ref alpha > 0: wherever the decoded frame has diverged) are
 // shown with nearest sampling so the block copies stay crisp; clean pixels use
 // the filtered source so the background stays smooth.
-// With the debug overlay on, the pointer mask is shaded translucent black, each
-// partition group in it gets a white arrow for the direction its content moves
-// (-mv, since mv is a fetch offset), and inter blocks show their partition
-// edges. Intra macroblocks are tinted red everywhere.
+// With the debug overlay on, the pointer mask (moshing or erasing) is shaded
+// translucent black, each partition group in the moshing mask gets a white
+// arrow for the direction its content moves (-mv, since mv is a fetch offset),
+// and inter blocks there show their partition edges. Intra macroblocks are
+// tinted red everywhere.
 in vec2 vUv;
 uniform sampler2D uRef;
 uniform sampler2D uCur;
@@ -47,8 +48,9 @@ void main() {
   vec3 col = r.a > 0.0 ? r.rgb : texture(uCur, vUv).rgb;
   if (uDebug) {
     if (!inter) col = mix(col, vec3(1.0, 0.0, 0.0), 0.35);
-    float w = texelFetch(uMask, p / MB, 0).r;
-    col *= 1.0 - 0.6 * w;
+    vec2 m = texelFetch(uMask, p / MB, 0).rg;
+    float w = m.r;
+    col *= 1.0 - 0.6 * (m.r + m.g);
     if (w > 0.0) {
       int code = int(sub.b + 0.5);
       if (inter) {

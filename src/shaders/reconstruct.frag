@@ -25,12 +25,17 @@
 // chroma lags the pointer's offset and partitions pick up a seeded Cb/Cr
 // bias. 8x8 partitions with weak offsets drip their neighbour's edge into
 // themselves, and a share of inter partitions over-apply their residual.
+//
+// In the right button's erase zone (mask.g), moshed pixels ease towards the
+// source by uEraseRate times the mask each step; blocks.frag forces a block
+// intra once it is close enough, which clears the mosh outright.
 uniform sampler2D uRef;
 uniform sampler2D uCur;
 uniform sampler2D uTmp;    // row-inverted coefficients from idctRows.frag
 uniform sampler2D uState;
 uniform sampler2D uSub;    // linear filtered; texelFetch everywhere but warp
 uniform sampler2D uFlow;
+uniform sampler2D uMask;   // g = erase strength
 uniform float uResidualGain;
 uniform vec4 uPhase;       // xy = luma rounding dither, zw = chroma
 uniform float uCut;        // 1 on the step after a source swap: every inter pixel is moshed
@@ -41,6 +46,7 @@ uniform float uResBloomFrac;
 uniform float uResBloom;   // residual gain on that share of partitions
 uniform float uSmear;      // edge blend at the partition's source edge
 uniform float uSmearMv;    // pointer offset (px) below which 8x8 partitions smear
+uniform float uEraseRate;  // per-step blend towards the source at full erase strength
 
 vec4 catmullRom(float t) {
   float t2 = t * t;
@@ -142,6 +148,9 @@ void main() {
     vec2 dir = vec2(hash12(vec2(anchor) + 8.3), hash12(vec2(anchor) + 9.7)) * 2.0 - 1.0;
     ycc.yz += uDcDrift * dir;
   }
+
+  // Erasing fades the mosh towards the source.
+  ycc = mix(ycc, rgb2ycc(clean), texelFetch(uMask, p / MB, 0).g * uEraseRate);
 
   // Round to multiples of 1/2048 ourselves, which RGBA16F holds exactly on
   // 0..1, so the GPU's float-to-half conversion never rounds. Some GPUs

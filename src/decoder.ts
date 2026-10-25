@@ -152,6 +152,7 @@ export class Decoder {
     const mu = passes.mask.uniforms;
     mu.uPointer.value.copy(pointer.pos);
     mu.uActive.value = pointer.active;
+    mu.uErase.value = pointer.erase ? 1 : 0;
     mu.uTime.value = this.time;
     gl.draw(passes.mask, mask);
 
@@ -172,6 +173,8 @@ export class Decoder {
     bu.uCur.value = cur.texture;
     bu.uPrev.value = prev.texture;
     bu.uFlow.value = flow[0].texture;
+    bu.uMask.value = mask.texture;
+    bu.uRef.value = ref[0].texture;
     bu.uPhase.value.copy(phase);
     gl.draw(passes.blocks, state[1]);
     state.reverse();
@@ -215,6 +218,7 @@ export class Decoder {
     cu.uState.value = state[0].texture;
     cu.uSub.value = sub[0].texture;
     cu.uFlow.value = flow[0].texture;
+    cu.uMask.value = mask.texture;
     cu.uPhase.value.copy(phase);
     cu.uCut.value = this.cutPending ? 1 : 0;
     this.cutPending = false;

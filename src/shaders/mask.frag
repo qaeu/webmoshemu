@@ -1,9 +1,11 @@
-// The pointer's zone mask, one texel per 16x16 macroblock (r = strength).
+// The pointer's zone mask, one texel per 16x16 macroblock (r = moshing
+// strength, g = erasing strength; only one is nonzero, by uErase).
 // A soft disc minus drifting simplex noise (scaled to 0..0.5), so the zone has
-// dead zones as well as stronger and weaker patches. Read by blocks.frag, and by
-// present.frag for the debug overlay.
+// dead zones as well as stronger and weaker patches. Read by sub.frag (r),
+// blocks.frag (g), and by present.frag for the debug overlay.
 uniform vec2 uPointer;     // internal px, origin bottom-left
 uniform float uActive;
+uniform float uErase;      // 1 while the latest press is the right button
 uniform float uRadius;
 uniform float uTime;
 uniform float uNoiseScale; // internal px per noise unit
@@ -84,5 +86,5 @@ void main() {
   float disc = 1.0 - smoothstep(0.15 * uRadius, uRadius, r);
   float w = uActive * max(disc - 0.5 * n, 0.0);
 
-  fragColor = vec4(w, 0.0, 0.0, 1.0);
+  fragColor = vec4(w * (1.0 - uErase), w * uErase, 0.0, 1.0);
 }

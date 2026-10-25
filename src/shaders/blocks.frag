@@ -11,7 +11,10 @@
 // error by uIntraBias. That happens where the scene shows something the
 // previous frame didn't have: content entering at the frame edge as the
 // camera pans, disocclusions, cuts within the clip, fast change. It is the
-// only thing that clears mosh.
+// only thing that clears mosh. In the right button's erase zone (mask.g),
+// where sub.frag and reconstruct.frag ease the mosh towards the source, a
+// block is also forced intra once its last decoded frame is within
+// uEraseClear of the source frame it decoded, so the switch doesn't show.
 //
 // Melt: a seeded share of inter blocks whose pointer offsets get strong switch
 // to bicubic (sub-pel) motion compensation. The choice latches until the
@@ -22,8 +25,11 @@ uniform sampler2D uSub;    // last step's partitions
 uniform sampler2D uCur;
 uniform sampler2D uPrev;
 uniform sampler2D uFlow;
+uniform sampler2D uMask;   // g = erase strength
+uniform sampler2D uRef;    // last step's decoded frame, which decoded uPrev
 uniform vec4 uPhase;       // as in reconstruct.frag
 uniform float uIntraBias;  // mean |error| per pixel intra must win by
+uniform float uEraseClear; // mean |error| per pixel below which an erased block goes intra
 uniform float uMvOn;       // pointer offset (px) below which the melt latch clears
 uniform float uMeltMv;     // pointer offset (px) a block needs before it can melt
 uniform float uMeltFrac;   // share of blocks that melt
@@ -57,7 +63,7 @@ void main() {
   // With no neighbours, DC predicts mid-grey (128 in H.264).
   dc = nDc > 0.0 ? dc / nDc : vec3(0.5, 0.0, 0.0);
 
-  float eInter = 0.0, eV = 0.0, eH = 0.0, eDc = 0.0;
+  float eInter = 0.0, eV = 0.0, eH = 0.0, eDc = 0.0, eMosh = 0.0;
   for (int y = 0; y < MB; y++) {
     for (int x = 0; x < MB; x++) {
       ivec2 p = o + ivec2(x, y);
@@ -66,12 +72,16 @@ void main() {
       eV += sad(c, top[x]);
       eH += sad(c, left[y]);
       eDc += sad(c, dc);
+      vec4 r = texelFetch(uRef, p, 0);
+      if (r.a > 0.0) eMosh += sad(rgb2ycc(r.rgb), rgb2ycc(texelFetch(uPrev, p, 0).rgb));
     }
   }
   float eIntra = eDc;
   if (hasTop) eIntra = min(eIntra, eV);
   if (hasLeft) eIntra = min(eIntra, eH);
   bool intra = eIntra + uIntraBias * float(MB * MB) < eInter;
+  float erase = texelFetch(uMask, b, 0).g;
+  intra = intra || (erase > 0.0 && eMosh < uEraseClear * float(MB * MB));
 
   float mv = 0.0;
   for (int i = 0; i < 4; i++) {
