@@ -143,8 +143,13 @@ void main() {
     ycc.yz += uDcDrift * dir;
   }
 
-  vec3 col = ycc2rgb(ycc);
-  // Half floats would freeze repeated sub-pel blends into bands; dither the write.
-  if (melt) col += (hash12(vec2(p) + uPhase.xy * 97.0) - 0.5) / 1024.0;
-  fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+  // Round to multiples of 1/2048 ourselves, which RGBA16F holds exactly on
+  // 0..1, so the GPU's float-to-half conversion never rounds. Some GPUs
+  // truncate there, and through the feedback loop that loses up to a
+  // half-float step every frame: still mosh would slowly darken. The dither
+  // makes the rounding unbiased and keeps repeated sub-pel blends from
+  // freezing into bands; an exact copy stays exact.
+  vec3 col = clamp(ycc2rgb(ycc), 0.0, 1.0);
+  col = floor(col * 2048.0 + hash12(vec2(p) + uPhase.xy * 97.0)) / 2048.0;
+  fragColor = vec4(col, 1.0);
 }
